@@ -519,7 +519,15 @@ int am_eval_acb(acb_t out, Value *f, int x, const acb_t z, int analytic, slong p
 int am_zero_test(Value *v, char *witness, size_t wlen) {
     if (witness && wlen) witness[0] = 0;
     v = am_reevaluate(v);
-    if (v->kind == V_NUM) { truth_t t = ca_check_is_zero(v->num, am_ca); return t == T_TRUE ? 1 : t == T_FALSE ? 0 : -1; }
+    if (v->kind == V_NUM) {
+        truth_t t = ca_check_is_zero(v->num, am_ca);
+        if (t != T_UNKNOWN) return t == T_TRUE ? 1 : 0;
+        acb_t z; acb_init(z);                                   /* undecided exactly: a ball shows it nonzero, or near 0 */
+        ca_get_acb(z, v->num, 512, am_ca);
+        int r = !acb_is_finite(z) ? -1 : acb_contains_zero(z) ? 2 : 0;
+        acb_clear(z);
+        return r;
+    }
     if (v->kind != V_RF) return -1;
     if (fmpz_mpoly_q_is_zero(v->rf, am_mp)) return 1;
     Value *nf = am_normal_form(v);

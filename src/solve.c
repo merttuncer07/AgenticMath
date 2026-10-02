@@ -196,6 +196,58 @@ static int exp_multiples(const fmpz_mpoly_t f, int x, int *ks, int nk, Cands *ou
     return ok;
 }
 
+static Value *from_mpoly(const fmpz_mpoly_t p);
+
+/* c0 + sum n_i log(u_i) = 0 with whole n_i: exp(c0) prod u_i^n_i = 1 (a superset of the solutions: checked later) */
+static int logs_combined(const fmpz_mpoly_t f, int x, Cands *out, int depth) {
+    Value *c0 = num_si(0), *prod = num_si(1);
+    int any = 0;
+    fmpz_mpoly_t term; fmpz_mpoly_init(term, am_mp);
+    ulong ex[AM_MAXVARS];
+    for (slong t = 0; t < fmpz_mpoly_length(f, am_mp); t++) {
+        fmpz_mpoly_get_term(term, f, t, am_mp);
+        Value *tv = from_mpoly(term);
+        if (am_free_of(tv, x)) { c0 = v_add(c0, tv); continue; }
+        fmpz_mpoly_get_term_exp_ui(ex, f, t, am_mp);
+        int lg = -1, other = 0;
+        for (int i = 0; i < am_nvars; i++) {
+            if (!ex[i]) continue;
+            if (am_free_of(am_gen(i), x)) { other = 1; continue; }
+            if (ex[i] == 1 && am_vars[i].head && !strcmp(am_vars[i].head, "log") && am_vars[i].nargs == 1 && lg < 0) lg = i;
+            else { fmpz_mpoly_clear(term, am_mp); return 0; }
+        }
+        if (lg < 0 || other) { fmpz_mpoly_clear(term, am_mp); return 0; }
+        fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, f, t, am_mp);
+        if (fmpz_cmp_si(c, 16) > 0 || fmpz_cmp_si(c, -16) < 0) { fmpz_clear(c); fmpz_mpoly_clear(term, am_mp); return 0; }
+        Value *cv = v_num(); ca_set_fmpz(cv->num, c, am_ca); fmpz_clear(c);
+        prod = v_mul(prod, v_pow(am_vars[lg].args[0], cv));
+        any = 1;
+    }
+    fmpz_mpoly_clear(term, am_mp);
+    if (!any) return 0;
+    Value *g = v_sub(v_mul(call1("exp", c0), prod), num_si(1));
+    solve_in(g, x, out, depth + 1);
+    return 1;
+}
+
+/* A + B sqrt(u) = 0 (square roots the only function terms of x): A^2 - B^2 u = 0, a superset checked later */
+static int sqrt_squared(const fmpz_mpoly_t f, int x, int *ks, int nk, Cands *out, int depth) {
+    for (int i = 0; i < nk; i++) if (!am_vars[ks[i]].head || strcmp(am_vars[ks[i]].head, "sqrt") || am_vars[ks[i]].nargs != 1) return 0;
+    int s = ks[nk - 1];                                       /* one square root at a time; the others in later rounds */
+    Value *u = am_vars[s].args[0];
+    if (!am_free_of(u, s)) return 0;
+    Value **c;
+    slong d = coeffs_in(f, s, &c);
+    Value *A = num_si(0), *B = num_si(0), *up = num_si(1);
+    for (slong j = 0; j <= d; j++) {                          /* s^j = u^(j/2) or u^((j-1)/2) s */
+        if (j & 1) B = v_add(B, v_mul(c[j], up)); else A = v_add(A, v_mul(c[j], up));
+        if (j & 1) up = v_mul(up, u);
+    }
+    free(c);
+    solve_in(v_sub(v_mul(A, A), v_mul(v_mul(B, B), u)), x, out, depth + 1);
+    return 1;
+}
+
 static void solve_in(Value *e, int x, Cands *out, int depth) {
     if (depth > 8) am_fail("solve: nested too deeply");
     e = am_normal_form(am_reevaluate(e));
@@ -224,6 +276,8 @@ static void solve_in(Value *e, int x, Cands *out, int depth) {
             continue;
         }
         if (!bare && exp_multiples(f, x, ks, nk, out, depth)) continue;
+        if (logs_combined(f, x, out, depth)) continue;
+        if (sqrt_squared(f, x, ks, nk, out, depth)) continue;
         fmpz_mpoly_factor_clear(fac, am_mp);
         am_fail("solve: %s appears both bare and inside function terms (or in several unrelated ones); no exact method yet. nsolve(eq, %s, a, b) gives the certified real roots in [a, b]", am_varnames[x], am_varnames[x]);
     }
@@ -293,9 +347,9 @@ Value *am_solve1(Value *e, int x) {
     }
     snprintf(reals + rl, sizeof reals - rl, "]");
     free(c.v);
-    const char *how = "every solution of each factor (by roots, by formula, or by inverting the function terms)";
+    const char *how = "every solution of each factor (by roots, by formula, by inverting the function terms, or by combining logarithms and squaring roots)";
     if (worst == 1) am_status(S_PROVED, "%s; each put back into the equation: it holds exactly%s", how, nparams ? " (integer parameters at 0 and 1; the rest by periodicity)" : "");
-    else if (worst == 2) am_status(S_PROBABLE, "%s; each put back into the equation: it holds at random points", how);
+    else if (worst == 2) am_status(S_PROBABLE, "%s; each put back into the equation: it holds at random points, or to 150 digits where exact arithmetic could not decide", how);
     else am_status(S_UNKNOWN, "%s; putting some back into the equation was undecided", how);
     if (nparams) {
         char ps[256]; size_t pl = 0;
