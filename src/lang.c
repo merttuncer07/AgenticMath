@@ -102,7 +102,6 @@ static Node *mk(NKind k) { Node *n = calloc(1, sizeof *n); n->k = k; return n; }
 static Node *mk_tok(NKind k, const Tok *t) { Node *n = mk(k); n->s = strndup(t->s, t->len); n->len = t->len; return n; }
 static void add_arg(Node *n, Node *a) { n->a = realloc(n->a, (size_t)(n->n + 1) * sizeof(Node *)); n->a[n->n++] = a; }
 static void free_tree(Node *n) { if (!n) return; for (int i = 0; i < n->n; i++) free_tree(n->a[i]); free(n->a); free(n->s); free(n); }
-static int is_name(const Node *n, const char *w) { return n->k == N_NAME && !strcmp(n->s, w); }
 
 static Node *expr(void);
 static Node *unary(void);
@@ -185,14 +184,14 @@ static Node *neg(void) {
     if (at_word("not")) { pos++; Node *n = mk(N_NOT); add_arg(n, neg()); return n; }
     return rel();
 }
-static Node *conj(void) {
+static Node *conjunction(void) {
     Node *n = neg();
     while (at_word("and")) { pos++; Node *a = mk(N_AND); add_arg(a, n); add_arg(a, neg()); n = a; }
     return n;
 }
 static Node *expr(void) {
-    Node *n = conj();
-    while (at_word("or")) { pos++; Node *a = mk(N_OR); add_arg(a, n); add_arg(a, conj()); n = a; }
+    Node *n = conjunction();
+    while (at_word("or")) { pos++; Node *a = mk(N_OR); add_arg(a, n); add_arg(a, conjunction()); n = a; }
     return n;
 }
 
@@ -223,6 +222,9 @@ static void bind_global(const char *s, Value *v) {
     globals[nglobals].name = strdup(s);
     globals[nglobals++].v = v;
 }
+int am_rule_count(void) { return nrules; }
+const char *am_rule_src(int i, const char **name) { *name = rules[i].name; return rules[i].src; }
+
 static int has_rules(const char *name) { for (int i = 0; i < nrules; i++) if (!strcmp(rules[i].name, name)) return 1; return 0; }
 
 static int same_tree(const Node *a, const Node *b) {
@@ -379,6 +381,8 @@ static void note_undefined(const char *name) {
     char *js = am_json_str(name);
     am_fact("undefined_function", "%s", js);
     free(js);
+    const char *s = am_suggest(name);
+    if (s) { js = am_json_str(s); am_fact("did_you_mean", "%s", js); free(js); }
 }
 
 Value *am_call(const char *name, Value **args, int n) {
@@ -453,6 +457,13 @@ static Value *eval_call(Node *n) {
         int t = truth_of(eval(n->a[0]), "the condition of if");
         in_condition--;
         return t ? eval(n->a[1]) : eval(n->a[2]);
+    }
+    if (!strcmp(n->s, "help")) {                              /* help() or help(factor): the reference */
+        if (n->n > 1 || (n->n == 1 && n->a[0]->k != N_NAME && n->a[0]->k != N_CALL)) am_fail("help() or help(name)");
+        char *r = am_reference(n->n ? n->a[0]->s : NULL);
+        Value *v = v_str(r);
+        free(r);
+        return v;
     }
     if (!strcmp(n->s, "map")) {
         if (n->n != 2 || n->a[0]->k != N_NAME) am_fail("map(f, list) takes a function name and a list");

@@ -17,6 +17,18 @@ n=$((n+1))
 got=$(./amath -j -e 'factor(x^4 - 1)')
 n=$((n+1))
 [ "$got" = '{"input":"factor(x^4 - 1)","answer":"(x - 1)*(x + 1)*(x^2 + 1)","status":"proved","verdict":"every factor proved irreducible over Q (complete univariate factorization); multiplied back","facts":{"irreducible":false,"squarefree":true,"factor_degrees":[1,1,2],"multiplicities":[1,1,1],"rational_roots":["1","-1"]}}' ] || { echo "FAIL: -j factor: $got"; fail=$((fail+1)); }
+# --mcp: initialize, list the tools, evaluate in a session that keeps definitions
+got=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"evaluate","arguments":{"code":"f(x) := x^2 + 1\nfactor(f(x)^2 - 4)"}}}' \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"evaluate","arguments":{"code":"factr(12)"}}}' | ./amath --mcp)
+for want in '"id":1,"result":{"protocolVersion":"2025-06-18"' '"name":"evaluate"' '"name":"reference"' \
+            '(x - 1)*(x + 1)*(x^2 + 3)' '\"did_you_mean\":\"factor\"'; do
+  n=$((n+1))
+  case "$got" in *"$want"*) ;; *) echo "FAIL: mcp: missing $want"; fail=$((fail+1));; esac
+done
+n=$((n+1))
+[ "$(printf "%s\n" "$got" | wc -l)" -eq 4 ] || { echo "FAIL: mcp: expected 4 replies (none to the notification)"; fail=$((fail+1)); }
 # one portable file: runs from an empty directory
 tmp=$(mktemp -d); cp amath "$tmp/"
 got=$(cd "$tmp" && ./amath -e 'N(pi, 20)')

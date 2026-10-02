@@ -123,6 +123,21 @@ void am_work(const char *fmt, ...) {
     free(line);
 }
 
+long am_max_chars;
+static char *cut_buf;
+
+/* a long answer is cut, and the facts say how long it was */
+static const char *cut(const char *answer) {
+    size_t n = strlen(answer);
+    if (am_max_chars <= 0 || n <= (size_t)am_max_chars) return answer;
+    free(cut_buf);
+    cut_buf = malloc((size_t)am_max_chars + 96);
+    memcpy(cut_buf, answer, (size_t)am_max_chars);
+    sprintf(cut_buf + am_max_chars, " ... [cut: %zu characters in all]", n);
+    am_fact("cut", "{\"characters\":%zu,\"shown\":%ld}", n, am_max_chars);
+    return cut_buf;
+}
+
 char *am_render(const char *input, const char *answer, const char *error) {
     Buf b = {0, 0, 0};
     const char *st = status_name(status);
@@ -138,6 +153,7 @@ char *am_render(const char *input, const char *answer, const char *error) {
         }
         if (am_show && facts.n) { puts_(&b, "  facts: {"); puts_(&b, facts.s); puts_(&b, "}\n"); }
         if (error) { puts_(&b, "error: "); puts_(&b, error); return b.s; }
+        answer = cut(answer);
         puts_(&b, answer);
         if (st) {
             puts_(&b, "  [");
@@ -154,6 +170,7 @@ char *am_render(const char *input, const char *answer, const char *error) {
     free(in);
     if (error) { puts_(&b, ",\"error\":"); put_json_str(&b, error); }
     else {
+        answer = cut(answer);
         puts_(&b, ",\"answer\":"); put_json_str(&b, answer);
         if (st) { puts_(&b, ",\"status\":"); put_json_str(&b, st); }
         if (verdict[0]) { puts_(&b, ",\"verdict\":"); put_json_str(&b, verdict); }

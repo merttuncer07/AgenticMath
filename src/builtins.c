@@ -803,15 +803,40 @@ static Value *b_binomial(Value **a, int n) {
 
 /* ---------------- the table ---------------- */
 
-static const struct { const char *name; Builtin f; } TABLE[] = {
-    {"sqrt", b_sqrt}, {"exp", b_exp}, {"log", b_log}, {"ln", b_log}, {"sin", b_sin}, {"cos", b_cos}, {"tan", b_tan},
-    {"atan", b_atan}, {"asin", b_asin}, {"acos", b_acos}, {"abs", b_abs}, {"re", b_re}, {"im", b_im}, {"conj", b_conj},
-    {"floor", b_floor}, {"ceil", b_ceil}, {"gamma", b_gamma},
-    {"N", b_N}, {"isprime", b_isprime}, {"factor", b_factor}, {"expand", b_expand}, {"simplify", b_expand},
-    {"numer", b_numer}, {"denom", b_denom}, {"gcd", b_gcd}, {"diff", b_diff}, {"degree", b_degree},
-    {"resultant", b_resultant}, {"discriminant", b_discriminant}, {"subs", b_subs},
-    {"roots", b_roots}, {"realroots", b_realroots}, {"solve", b_solve}, {"binomial", b_binomial},
-    {NULL, NULL}};
+static const struct { const char *name; Builtin f; const char *sig, *doc; } TABLE[] = {
+    {"factor", b_factor, "factor(n) | factor(p)", "prime factors of a whole number or fraction (primes proved); irreducible factors of a polynomial over Q"},
+    {"roots", b_roots, "roots(p[, x])", "every complex root of a polynomial in one variable, as exact algebraic numbers, each once"},
+    {"realroots", b_realroots, "realroots(p[, x])", "the real roots of a polynomial, exactly"},
+    {"solve", b_solve, "solve(eq, x) | solve([eqs], [vars])", "exact solutions of one polynomial equation, or of a polynomial system (msolve); each solution checked by substitution"},
+    {"N", b_N, "N(x[, digits])", "a decimal with every digit guaranteed (default 15 digits); works on lists and equations"},
+    {"diff", b_diff, "diff(f, x[, n])", "derivative (n-th) with respect to x, through sin, exp, log, f(x), ... by the chain rule"},
+    {"subs", b_subs, "subs(f, x = a[, y = b]) | subs(f, [x = a, ...]) | subs(f, x, a)", "substitute values for variables; function terms are re-evaluated"},
+    {"gcd", b_gcd, "gcd(a, b, ...)", "greatest common divisor of whole numbers or polynomials"},
+    {"resultant", b_resultant, "resultant(p, q, x)", "resultant of two polynomials with respect to x"},
+    {"discriminant", b_discriminant, "discriminant(p[, x])", "discriminant of a polynomial with respect to x"},
+    {"degree", b_degree, "degree(p[, x])", "total degree, or the degree in x"},
+    {"expand", b_expand, "expand(e)", "the expanded form (every polynomial result is already expanded)"},
+    {"simplify", b_expand, "simplify(e)", "a canonical form: rational functions are reduced to lowest terms automatically"},
+    {"numer", b_numer, "numer(e)", "numerator of a rational function"},
+    {"denom", b_denom, "denom(e)", "denominator of a rational function"},
+    {"isprime", b_isprime, "isprime(n)", "true or false, with a proof of primality when one is found"},
+    {"binomial", b_binomial, "binomial(n, k)", "the binomial coefficient"},
+    {"sqrt", b_sqrt, "sqrt(x)", "square root (principal branch); exact for numbers, a function term for expressions"},
+    {"exp", b_exp, "exp(x)", "exponential"}, {"log", b_log, "log(x)", "natural logarithm (principal branch)"},
+    {"ln", b_log, "ln(x)", "the same as log"},
+    {"sin", b_sin, "sin(x)", "sine"}, {"cos", b_cos, "cos(x)", "cosine"}, {"tan", b_tan, "tan(x)", "tangent"},
+    {"atan", b_atan, "atan(x)", "arctangent"}, {"asin", b_asin, "asin(x)", "arcsine"}, {"acos", b_acos, "acos(x)", "arccosine"},
+    {"abs", b_abs, "abs(x)", "absolute value of a number"}, {"re", b_re, "re(x)", "real part"}, {"im", b_im, "im(x)", "imaginary part"},
+    {"conj", b_conj, "conj(x)", "complex conjugate"}, {"floor", b_floor, "floor(x)", "largest integer <= x"},
+    {"ceil", b_ceil, "ceil(x)", "smallest integer >= x"}, {"gamma", b_gamma, "gamma(x)", "the gamma function"},
+    {NULL, NULL, NULL, NULL}};
+
+/* the documentation of the built-ins: i-th entry, or NULL past the end */
+int am_builtin_doc(int i, const char **name, const char **sig, const char **doc) {
+    if (!TABLE[i].name) return 0;
+    *name = TABLE[i].name; *sig = TABLE[i].sig; *doc = TABLE[i].doc;
+    return 1;
+}
 
 Builtin am_builtin(const char *name, size_t len) {
     for (int i = 0; TABLE[i].name; i++) if (strlen(TABLE[i].name) == len && !strncmp(TABLE[i].name, name, len)) return TABLE[i].f;

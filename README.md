@@ -10,6 +10,20 @@ written to disk. Every answer gives an account of itself.
     {"input":"factor(x^4 - 1)","answer":"(x - 1)*(x + 1)*(x^2 + 1)","status":"proved","verdict":"...",
      "facts":{"irreducible":false,"squarefree":true,"factor_degrees":[1,1,2],"multiplicities":[1,1,1],"rational_roots":["1","-1"]}}
 
+## For agents: `amath --mcp`
+A Model Context Protocol server, in the same binary. Add it to an agent's MCP configuration:
+
+    {"mcpServers": {"agenticmath": {"command": "/path/to/amath", "args": ["--mcp"]}}}
+
+Two tools:
+- `evaluate` — `code`: statements, one per line (definitions persist for the session); `show`: also return the
+  steps and rules applied; `max_chars`: cut long answers (default 4000; the facts give the full length).
+  Returns one JSON object per statement.
+- `reference` — the language: notation, statuses, every function's signature, the library rules; or one entry.
+
+A misspelled or foreign function name stays symbolic and the facts suggest the right one
+(`factr(12)` → `"did_you_mean":"factor"`; `evalf` → `N`). In the language itself, `help()` and `help(factor)`.
+
 ## The account of an answer
 - `status`: how sure the answer is. `proved` (a complete argument was carried out), `exact` (exact arithmetic),
   `certified` (every digit guaranteed by ball arithmetic), `probable` (rests on a randomized step), `numeric`

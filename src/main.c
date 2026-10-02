@@ -29,13 +29,14 @@ int main(int argc, char **argv) {
     int i = 1;
     for (; i < argc && argv[i][0] == '-' && argv[i][1]; i++) {
         if (!strcmp(argv[i], "-j") || !strcmp(argv[i], "--json")) am_json = 1;
+        else if (!strcmp(argv[i], "--mcp")) return am_mcp();
         else if (!strcmp(argv[i], "-e") && i + 1 < argc) {
             int failed;
             char *out = am_run(argv[++i], &failed);
             if (out) { puts(out); free(out); }
             return failed;
         } else {
-            fprintf(stderr, "usage: amath [-j] [file | -e \"statement\"]\n  -j  one JSON line per statement\n");
+            fprintf(stderr, "usage: amath [-j] [file | -e \"statement\"] | amath --mcp\n  -j     one JSON line per statement\n  --mcp  a Model Context Protocol server on stdin/stdout\n");
             return 2;
         }
     }
