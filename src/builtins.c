@@ -190,7 +190,10 @@ static Value *b_isprime(Value **a, int n) {
     if (!get_fmpz(a[0], z)) am_fail("isprime needs a whole number");
     int p = fmpz_is_prime(z);
     Value *r;
-    if (p == 1) { r = v_bool(1); am_status(S_PROVED, "primality proved"); }
+    if (p == 1) {
+        r = v_bool(1); am_status(S_PROVED, "primality proved");
+        if (am_lean && fmpz_sgn(z) > 0) { char *ns = fmpz_get_str(NULL, 10, z); char *L = malloc(strlen(ns) + 64); sprintf(L, "example : Nat.Prime %s := by norm_num", ns); am_lean_fact(L); free(L); flint_free(ns); }
+    }
     else if (p == 0) { r = v_bool(0); am_status(S_PROVED, "a factor or a failed test shows it is composite"); }
     else { r = v_bool(fmpz_is_probabprime(z) ? 1 : 0); am_status(S_NUMERIC, "probable prime test (BPSW) only; no proof"); }
     fmpz_clear(z);
@@ -224,6 +227,13 @@ static Value *factor_number(const Value *v) {
             am_fact("distinct_prime_factors", "%ld", (long)F->num);
         }
         fmpz_factor_clear(F);
+    }
+    if (am_lean && !probable && fmpz_is_one(fmpq_denref(q))) {
+        char *ns = fmpz_get_str(NULL, 10, fmpq_numref(q));
+        char *L = malloc(strlen(ns) + strlen(b.s) + 64);
+        sprintf(L, "example : (%s : ℤ) = %s := by norm_num", ns, b.s);
+        am_lean_fact(L);
+        free(L); flint_free(ns);
     }
     if (probable) am_status(S_NUMERIC, "%d factor%s only probable primes (no proof)", probable, probable > 1 ? "s" : "");
     else am_status(S_PROVED, "every factor proved prime; multiplied back");
@@ -300,6 +310,13 @@ static Value *b_factor(Value **a, int n) {
         put_factors(&d, F[1], &one);
         sput(&b, d.s); free(d.s);
         if (par) sput(&b, ")");
+    }
+    if (am_lean) {                                               /* the factorization is an identity: ring */
+        char *lv = am_lean_vars(vs, nv), *in = v_str_of(a[0]);
+        char *L = malloc(strlen(lv) + strlen(in) + strlen(b.s) + 96);
+        sprintf(L, "example %s: %s = %s := by ring", lv, in, b.s);
+        am_lean_fact(L);
+        free(L); free(lv); free(in);
     }
     if (nv == 1) am_status(S_PROVED, "every factor proved irreducible over Q (complete univariate factorization); multiplied back");
     else am_status(S_EXACT, "irreducible factors over Q from FLINT's multivariate factorization; multiplied back");
@@ -803,6 +820,7 @@ static Value *b_binomial(Value **a, int n) {
 }
 
 Value *b_integrate(Value **a, int n);
+Value *b_cofactors(Value **a, int n);
 Value *b_series(Value **a, int n);
 Value *b_taylor(Value **a, int n);
 Value *b_limit(Value **a, int n);
@@ -824,6 +842,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"series", b_series, "series(f, x[, a[, n]])", "the power series (Taylor or Laurent) of f at x = a (default 0) to order n (default 6), exact coefficients, written with O(...); log(x - a) kept as a symbol where it appears; the facts list the coefficients"},
     {"taylor", b_taylor, "taylor(f, x[, a[, n]])", "the terms of the series below order n, as an expression to compute with (no O term)"},
     {"limit", b_limit, "limit(f, x, a[, \"+\" | \"-\"])", "the limit at a (a number, oo or -oo), from the leading term of the series; one-sided with \"+\" or \"-\""},
+    {"cofactors", b_cofactors, "cofactors(g, [h1, ..., hk])", "polynomials c_i with g = c_1 h_1 + ... + c_k h_k (so g = 0 follows from the h_i = 0), checked by expansion; with the lean prefix, a Lean 4 proof by linear_combination"},
     {"N", b_N, "N(x[, digits])", "a decimal with every digit guaranteed (default 15 digits); works on lists and equations"},
     {"diff", b_diff, "diff(f, x[, n])", "derivative (n-th) with respect to x, through sin, exp, log, f(x), ... by the chain rule"},
     {"subs", b_subs, "subs(f, x = a[, y = b]) | subs(f, [x = a, ...]) | subs(f, x, a)", "substitute values for variables; function terms are re-evaluated"},

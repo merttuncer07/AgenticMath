@@ -295,6 +295,49 @@ static int truth_of(Value *v, const char *what) {
     return v->truth;
 }
 
+/* an expression as written (from the tree), for certificates */
+static char *node_text(Node *n) {
+    char *a, *b, *r;
+    switch (n->k) {
+    case N_NUM: case N_NAME: return strdup(n->s);
+    case N_NEG: a = node_text(n->a[0]); r = malloc(strlen(a) + 4); sprintf(r, "-(%s)", a); free(a); return r;
+    case N_BIN:
+        a = node_text(n->a[0]); b = node_text(n->a[1]);
+        r = malloc(strlen(a) + strlen(b) + 8);
+        sprintf(r, "(%s %s %s)", a, n->op[0] == '^' ? "^" : n->op, b);
+        free(a); free(b);
+        return r;
+    case N_CALL: {
+        size_t cap = strlen(n->s) + 4; char **as = malloc((size_t)(n->n ? n->n : 1) * sizeof *as);
+        for (int i = 0; i < n->n; i++) { as[i] = node_text(n->a[i]); cap += strlen(as[i]) + 2; }
+        r = malloc(cap); char *o = r + sprintf(r, "%s(", n->s);
+        for (int i = 0; i < n->n; i++) { o += sprintf(o, "%s%s", i ? ", " : "", as[i]); free(as[i]); }
+        sprintf(o, ")"); free(as);
+        return r;
+    }
+    default: return strdup("?");
+    }
+}
+static Node *cur_cmp;                                            /* the comparison being evaluated, for its source */
+
+/* a = b between polynomials over Q, as a Lean 4 proof by ring */
+static void lean_identity(Value *a, Value *b) {
+    Value *ab[2] = {a, b};
+    int used[AM_MAXVARS] = {0}, vars[AM_MAXVARS], nv = 0;
+    for (int k = 0; k < 2; k++) {
+        if (ab[k]->kind == V_NUM) { if (!CA_IS_QQ(ab[k]->num, am_ca)) return; continue; }
+        if (ab[k]->kind != V_RF || !fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(ab[k]->rf), am_mp)) return;
+        fmpz_mpoly_q_used_vars(used, ab[k]->rf, am_mp);
+    }
+    for (int i = 0; i < am_nvars; i++) if (used[i]) { if (am_vars[i].kernel) return; vars[nv++] = i; }
+    char *vs = am_lean_vars(vars, nv);
+    char *as = cur_cmp ? node_text(cur_cmp->a[0]) : v_str_of(a), *bs = cur_cmp ? node_text(cur_cmp->a[1]) : v_str_of(b);
+    char *L = malloc(strlen(vs) + strlen(as) + strlen(bs) + 64);
+    sprintf(L, "example %s: %s = %s := by ring", vs, as, bs);
+    am_lean_fact(L);
+    free(L); free(vs); free(as); free(bs);
+}
+
 static Value *compare(const char *op, Value *a, Value *b) {
     if (!strcmp(op, "=")) { Value *r = v_list(2); r->kind = V_EQ; r->items[0] = a; r->items[1] = b; return r; }
     Value *d = v_sub(a, b);
@@ -306,7 +349,10 @@ static Value *compare(const char *op, Value *a, Value *b) {
         int used[AM_MAXVARS] = {0};
         fmpz_mpoly_q_used_vars(used, d->rf, am_mp);
         for (int i = 0; i < am_nvars; i++) if (used[i] && am_vars[i].kernel) kernels = 1;
-        if (fmpz_mpoly_q_is_zero(d->rf, am_mp)) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference is identically 0"); }
+        if (fmpz_mpoly_q_is_zero(d->rf, am_mp)) {
+            t = T_TRUE;
+            if (!in_condition) am_status(S_PROVED, "the difference is identically 0");
+        }
         else if (!kernels) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the difference is a nonzero rational function"); }
         else {
             char where[256];
@@ -337,6 +383,7 @@ static Value *compare(const char *op, Value *a, Value *b) {
         }
         if (strcmp(op, "==") && strcmp(op, "!=")) am_fail("'%s' compares numbers", op);
     } else am_fail("'%s' compares numbers or expressions", op);
+    if (t == T_TRUE && !strcmp(op, "==") && am_lean && !in_condition) lean_identity(a, b);
     if (!strcmp(op, "!=") && t != T_UNKNOWN) t = t == T_TRUE ? T_FALSE : T_TRUE;
     return v_bool(t == T_TRUE ? 1 : t == T_FALSE ? 0 : -1);
 }
@@ -636,7 +683,7 @@ static Value *eval(Node *n) {
         case '*': return v_mul(a, b);
         case '/': return v_div(a, b);
         case '^': return v_pow(a, b);
-        default: return compare(n->op, a, b);
+        default: { Node *save = cur_cmp; cur_cmp = n; Value *r = compare(n->op, a, b); cur_cmp = save; return r; }
         }
     }
     }
@@ -670,7 +717,11 @@ static int definition_ahead(int *assign_at) {
 static char *run_statement(const char *line, Node *volatile *tree) {
     lex(line);
     if (peek()->k == T_END) return NULL;
-    if (at_word("show")) { pos++; am_show = 1; }
+    for (;;) {
+        if (at_word("show")) { pos++; am_show = 1; }
+        else if (at_word("lean")) { pos++; am_lean = 1; }
+        else break;
+    }
     int at;
     if (definition_ahead(&at)) {                              /* f(patterns) := body [if condition] */
         Tok name = *peek();
@@ -716,7 +767,7 @@ static char *run_statement(const char *line, Node *volatile *tree) {
 
 char *am_run(const char *line, int *failed) {
     *failed = 0;
-    am_show = 0;
+    am_show = 0; am_lean = 0;
     frame = NULL; depth = 0; in_condition = 0;
     am_account_reset();
     Node *volatile tree = NULL;

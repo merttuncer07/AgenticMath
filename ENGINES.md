@@ -23,6 +23,7 @@ comes close on speed (benchmarks on real sizes).
 | normal form and zero test (trig, sqrt), certified witnesses | ours | yes | Arb for certified evaluation |
 | series, limits (with log symbols and exponential dominance), definite integrals | ours | yes | |
 | certified numerical integration | Arb (acb_calc_integrate) | no | our ball evaluator of expressions feeds it |
+| cofactors (ideal membership by Macaulay matrices), Lean 4 certificates | ours | yes | FLINT for the rational linear algebra |
 | big integers | GMP (through FLINT) | no | the deepest layer; decided last |
 | rational functions in many variables | FLINT fmpz_mpoly_q | no | |
 | factor (whole numbers) | FLINT fmpz_factor, fmpz_is_prime | no | primality proofs |

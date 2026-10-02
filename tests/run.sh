@@ -17,6 +17,16 @@ n=$((n+1))
 got=$(./amath -j -e 'factor(x^4 - 1)')
 n=$((n+1))
 [ "$got" = '{"input":"factor(x^4 - 1)","answer":"(x - 1)*(x + 1)*(x^2 + 1)","status":"proved","verdict":"every factor proved irreducible over Q (complete univariate factorization); multiplied back","facts":{"irreducible":false,"squarefree":true,"factor_degrees":[1,1,2],"multiplicities":[1,1,1],"rational_roots":["1","-1"]}}' ] || { echo "FAIL: -j factor: $got"; fail=$((fail+1)); }
+# lean: Lean 4 proofs in the facts
+for pair in 'lean cofactors(x^3 + y^3 = 0, [x + y = 0])|linear_combination (x^2 - x*y + y^2) * h1' \
+            'lean factor(x^4 - 1)|example (x : ℚ) : x^4 - 1 = (x - 1)*(x + 1)*(x^2 + 1) := by ring' \
+            'lean (a-b)*(a+b) == a^2 - b^2|example (a b : ℚ) : ((a - b) * (a + b)) = ((a ^ 2) - (b ^ 2)) := by ring' \
+            'lean isprime(1000003)|example : Nat.Prime 1000003 := by norm_num'; do
+  stmt=${pair%%|*}; want=${pair#*|}
+  got=$(./amath -j -e "$stmt")
+  n=$((n+1))
+  case "$got" in *"$want"*) ;; *) echo "FAIL: $stmt: $got"; fail=$((fail+1));; esac
+done
 # --mcp: initialize, list the tools, evaluate in a session that keeps definitions
 got=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \

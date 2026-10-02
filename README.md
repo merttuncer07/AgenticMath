@@ -94,6 +94,20 @@ Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if
   `1.46265174590718160880404858686  [certified]`. `integrate(1/(x^4+1), x, 0, oo)` → `pi*sqrt(2)/4  [proved]`.
 - Powers with any exponent: `x^(1/2)` is `sqrt(x)`, `x^x` is `exp(x*log(x))`.
 
+## Certificates for Lean
+`cofactors(g, [h1, ..., hk])` finds polynomials c_i with g = c₁h₁ + … + c_kh_k (so g = 0 follows from the
+hypotheses), by linear algebra on the coefficients, and checks them by expansion. Prefix any statement with `lean`
+and the facts carry a Lean 4 proof:
+
+    lean cofactors(x^3 + y^3 = 0, [x + y = 0])
+    example (x y : ℚ) (h1 : x + y = 0) :
+        x^3 + y^3 = 0 := by
+      linear_combination (x^2 - x*y + y^2) * h1
+
+Also `lean factor(p)` (by ring), `lean a == b` for polynomial identities (by ring), `lean factor(n)` and
+`lean isprime(p)` (by norm_num). The proofs are generated here; Lean itself is not run. This is the service Mathlib's
+`polyrith` tactic used to get from an online Sage server, offline and in one file.
+
 ## Deciding equality
 `a == b` subtracts and decides: exact arithmetic for numbers; for expressions, a normal form (tan = sin/cos,
 sin² + cos² = 1, sqrt(u)² = u, sqrt(D)² = D, I² = −1) that proves equality when the difference reduces to 0; a
