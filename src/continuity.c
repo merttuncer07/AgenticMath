@@ -118,7 +118,7 @@ static int holds_on(Value *g, int x, Value *a, Value *b, int what) {
 }
 
 static int real_kernel(const char *h) {
-    static const char *ok[] = {"exp", "sin", "cos", "atan", "erf", "abs", NULL};
+    static const char *ok[] = {"exp", "sin", "cos", "atan", "erf", "abs", "Si", NULL};
     for (int i = 0; ok[i]; i++) if (!strcmp(h, ok[i])) return 1;
     return 0;
 }

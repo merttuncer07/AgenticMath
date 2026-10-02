@@ -36,3 +36,6 @@ antiderivative(sqrt(u), x) := (2*coeff(u, x, 2)*x + coeff(u, x, 1))*sqrt(u)/(4*c
 
 # exp of a quadratic with a negative leading coefficient: the error function
 antiderivative(exp(u), x) := sqrt(pi)*exp(coeff(u, x, 0) - coeff(u, x, 1)^2/(4*coeff(u, x, 2)))*erf(sqrt(-coeff(u, x, 2))*x - coeff(u, x, 1)/(2*sqrt(-coeff(u, x, 2))))/(2*sqrt(-coeff(u, x, 2))) if quadratic(u, x) and coeff(u, x, 2) < 0
+
+# the sine integral: sin(a x)/x
+antiderivative(sin(u)*v^n, x) := Si(u) if n == -1 and v == x and linear(u, x) and coeff(u, x, 0) == 0

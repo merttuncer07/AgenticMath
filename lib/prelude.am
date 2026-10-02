@@ -26,6 +26,7 @@ asinh(u) := log(u + sqrt(u^2 + 1))
 acosh(u) := log(u + sqrt(u^2 - 1))
 atanh(u) := log((1 + u)/(1 - u))/2
 diff(erf(u), x) := 2*exp(-u^2)/sqrt(pi)*diff(u, x)
+diff(Si(u), x) := sin(u)/u*diff(u, x)
 
 # names other systems use
 arcsin(u) := asin(u)

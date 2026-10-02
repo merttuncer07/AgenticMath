@@ -465,6 +465,7 @@ Value *am_normal_form(Value *v) {
 }
 
 /* is v zero? 1 proved, 0 proved not (a point where it is not 0), 2 zero at random points (not a proof), -1 undecided */
+int am_eval_acb(acb_t out, Value *f, int x, const acb_t z, int analytic, slong prec);
 int am_zero_test(Value *v, char *witness, size_t wlen) {
     if (witness && wlen) witness[0] = 0;
     v = am_reevaluate(v);
@@ -508,9 +509,14 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
             free(ka);
         }
         Value *x = am_reevaluate(am_subs_rf(v, val));
-        if (x->kind != V_NUM) return -1;
         acb_t z; acb_init(z);
-        ca_get_acb(z, x->num, 256, am_ca);
+        if (x->kind == V_NUM) ca_get_acb(z, x->num, 256, am_ca);
+        else {                                                 /* Si(1), zeta(3): terms of numbers, by ball arithmetic */
+            acb_t z0; acb_init(z0);
+            int ok = am_eval_acb(z, x, -1, z0, 0, 256) && acb_is_finite(z);
+            acb_clear(z0);
+            if (!ok) { acb_clear(z); return -1; }
+        }
         int contains = acb_contains_zero(z);
         acb_clear(z);
         if (!contains) { if (witness) snprintf(witness, wlen, "%s", where); return 0; }

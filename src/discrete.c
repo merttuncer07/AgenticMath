@@ -197,11 +197,39 @@ static Value *b_len(Value **a, int n) {
     return num_si(a[0]->kind == V_LIST ? a[0]->n : (slong)strlen(a[0]->str));
 }
 
+static Value *subs1(Value *f, int k, Value *val);
 static Value *b_product(Value **a, int n) {
-    if (n != 1 || a[0]->kind != V_LIST) am_fail("product(list)");
-    Value *p = num_si(1);
-    for (int i = 0; i < a[0]->n; i++) p = v_mul(p, a[0]->items[i]);
-    return p;
+    if (n == 1 && a[0]->kind == V_LIST) {
+        Value *p = num_si(1);
+        for (int i = 0; i < a[0]->n; i++) p = v_mul(p, a[0]->items[i]);
+        return p;
+    }
+    if (n != 4) am_fail("product(list) or product(f, k, a, b)");
+    int k = am_gen_of(a[1]);
+    if (k < 0 || am_vars[k].kernel) am_fail("product: the second argument must be the index variable");
+    fmpz_t A, B; fmpz_init(A); fmpz_init(B);
+    if (whole(a[2], A) && whole(a[3], B)) {
+        fmpz_t cnt; fmpz_init(cnt); fmpz_sub(cnt, B, A);
+        int small = fmpz_cmp_si(cnt, 100000) <= 0;
+        fmpz_clear(cnt);
+        if (small) {
+            Value *p = num_si(1);
+            for (slong i = fmpz_get_si(A); i <= fmpz_get_si(B); i++) p = v_mul(p, subs1(a[0], k, num_si(i)));
+            fmpz_clear(A); fmpz_clear(B);
+            am_status(S_EXACT, "multiplied term by term, exactly");
+            return p;
+        }
+    }
+    fmpz_clear(A); fmpz_clear(B);
+    /* product of k from 1 to n: n! */
+    Value *d = v_sub(a[0], a[1]), *one = v_sub(a[2], num_si(1));
+    if (am_zero_test(d, NULL, 0) == 1 && am_zero_test(one, NULL, 0) == 1) {
+        am_status(S_PROVED, "the product of k from 1 to n is n!");
+        Value *b = a[3];
+        return am_kernel_value("factorial", &b, 1);
+    }
+    am_status(S_UNKNOWN, "no closed form found for the product (numeric bounds are multiplied out)");
+    return am_kernel_value("product", a, 4);
 }
 
 /* ---------------- sums ---------------- */

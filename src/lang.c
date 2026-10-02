@@ -359,7 +359,7 @@ static Value *compare(const char *op, Value *a, Value *b) {
             char where[256];
             int z = am_zero_test(d, where, sizeof where);
             if (z == 1) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference reduces to 0 (using tan = sin/cos, multiple angles, sin^2 + cos^2 = 1, sqrt(u)^2 = u)"); }
-            else if (z == 0) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the two sides differ at %s (certified evaluation)", where); }
+            else if (z == 0) { t = T_FALSE; if (!in_condition) { if (where[0]) am_status(S_PROVED, "the two sides differ at %s (certified evaluation)", where); else am_status(S_PROVED, "the difference is a nonzero number (certified evaluation)"); } }
             else if (z == 2) { t = T_TRUE; if (!in_condition) am_status(S_PROBABLE, "equal at 5 random points (certified evaluation), not proved symbolically"); }
             else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that could not be decided"); }
         }
@@ -415,16 +415,22 @@ static void flatten_product(Node *p, Node **out, int *n) {
 static int match_product(Node *p, Value *v, Frame *f) {
     Node *pf[8]; int np = 0;
     flatten_product(p, pf, &np);
-    if (v->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(v->rf), am_mp)) return 0;
-    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf);
-    if (fmpz_mpoly_length(N, am_mp) != 1) return 0;
-    ulong ex[AM_MAXVARS]; fmpz_mpoly_get_term_exp_ui(ex, N, 0, am_mp);
-    fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, N, 0, am_mp);
+    if (v->kind != V_RF) return 0;
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf), *Dn = fmpz_mpoly_q_denref(v->rf);
+    if (fmpz_mpoly_length(N, am_mp) != 1 || fmpz_mpoly_length(Dn, am_mp) != 1) return 0;   /* monomial over monomial */
+    ulong en[AM_MAXVARS], ed[AM_MAXVARS];
+    fmpz_mpoly_get_term_exp_ui(en, N, 0, am_mp); fmpz_mpoly_get_term_exp_ui(ed, Dn, 0, am_mp);
+    slong ex[AM_MAXVARS];
+    for (int i = 0; i < AM_MAXVARS; i++) ex[i] = i < am_nvars ? (slong)en[i] - (slong)ed[i] : 0;
+    fmpq_t c; fmpq_init(c);
+    { fmpz_t a, b; fmpz_init(a); fmpz_init(b);
+      fmpz_mpoly_get_term_coeff_fmpz(a, N, 0, am_mp); fmpz_mpoly_get_term_coeff_fmpz(b, Dn, 0, am_mp);
+      fmpq_set_fmpz_frac(c, a, b); fmpz_clear(a); fmpz_clear(b); }
     int gens[AM_MAXVARS], ng = 0;
     for (int i = 0; i < am_nvars; i++) if (ex[i]) gens[ng++] = i;
     int rest = -1, nfix = 0;
     for (int i = 0; i < np; i++) { if (pf[i]->k == N_NAME && rest < 0) rest = i; else nfix++; }
-    if (nfix > ng) { fmpz_clear(c); return 0; }
+    if (nfix > ng) { fmpq_clear(c); return 0; }
     /* try every assignment of the fixed pattern factors to distinct generators */
     int choice[8], ok = 0;
     for (int i = 0; i < 8; i++) choice[i] = 0;
@@ -436,24 +442,24 @@ static int match_product(Node *p, Value *v, Frame *f) {
         if (!distinct) continue;
         Frame save = *f;
         int good = 1, k = 0;
-        ulong left[AM_MAXVARS]; memcpy(left, ex, sizeof left);
+        slong left[AM_MAXVARS]; memcpy(left, ex, sizeof left);
         for (int i = 0; i < np && good; i++) {
             if (i == rest) continue;
             int g = choice[k++];
-            Value *e = v_num(); ca_set_ui(e->num, ex[g], am_ca);
+            Value *e = v_num(); ca_set_si(e->num, ex[g], am_ca);
             Value *piece = v_pow(am_gen(g), e);
             good = match(pf[i], piece, f);
             left[g] = 0;
         }
         if (good) {
-            Value *r = v_num(); ca_set_fmpz(r->num, c, am_ca);
-            for (int i = 0; i < am_nvars; i++) if (left[i]) { Value *e = v_num(); ca_set_ui(e->num, left[i], am_ca); r = v_mul(r, v_pow(am_gen(i), e)); }
+            Value *r = v_num(); ca_set_fmpq(r->num, c, am_ca);
+            for (int i = 0; i < am_nvars; i++) if (left[i]) { Value *e = v_num(); ca_set_si(e->num, left[i], am_ca); r = v_mul(r, v_pow(am_gen(i), e)); }
             if (rest >= 0) good = match(pf[rest], r, f);
             else good = r->kind == V_NUM && ca_check_is_one(r->num, am_ca) == T_TRUE;
         }
         if (good) ok = 1; else *f = save;
     }
-    fmpz_clear(c);
+    fmpq_clear(c);
     return ok;
 }
 

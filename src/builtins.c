@@ -772,7 +772,61 @@ static void ca_horner(ca_t res, const fmpz_poly_t p, const ca_t t) {
     ca_clear(h, am_ca);
 }
 
+/* a linear system: exact elimination (linsolve), every solution, proved */
+static Value *solve_linear(Value **eqs, int ne, int *vars, int nvar) {
+    for (int i = 0; i < ne; i++) {
+        Value *e = eqs[i];
+        if (e->kind == V_NUM) continue;
+        if (e->kind != V_RF) return NULL;
+        for (int j = 0; j < nvar; j++) {
+            if (fmpz_mpoly_degree_si(fmpz_mpoly_q_denref(e->rf), vars[j], am_mp) > 0) return NULL;
+            for (int k = 0; k < am_nvars; k++)                     /* no kernel of the unknowns */
+                if (am_vars[k].kernel && !am_free_of(am_gen(k), vars[j]) && !am_free_of(e, k)) return NULL;
+        }
+        /* total degree in the unknowns at most 1 */
+        const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(e->rf);
+        ulong ex[AM_MAXVARS];
+        for (slong t = 0; t < fmpz_mpoly_length(N, am_mp); t++) {
+            fmpz_mpoly_get_term_exp_ui(ex, N, t, am_mp);
+            ulong deg = 0;
+            for (int j = 0; j < nvar; j++) deg += ex[vars[j]];
+            if (deg > 1) return NULL;
+        }
+    }
+    Value *A = v_list(ne), *b = v_list(ne);
+    for (int i = 0; i < ne; i++) {
+        A->items[i] = v_list(nvar);
+        Value *rest = eqs[i];
+        for (int j = 0; j < nvar; j++) {
+            Value *da[2] = {eqs[i], gen_value(vars[j])};
+            Value *c = am_call("diff", da, 2);
+            A->items[i]->items[j] = c;
+            rest = v_sub(rest, v_mul(c, gen_value(vars[j])));
+        }
+        b->items[i] = v_neg(rest);
+    }
+    Value *la[2] = {A, b};
+    Value *sol = am_call("linsolve", la, 2);
+    if (sol->kind != V_LIST) return NULL;
+    Value *out = v_list(sol->n ? 1 : 0);
+    if (sol->n) {
+        Value *row = v_list(nvar);
+        for (int j = 0; j < nvar; j++) {
+            Value *e = v_list(2); e->kind = V_EQ; e->items[0] = gen_value(vars[j]); e->items[1] = sol->items[j];
+            row->items[j] = e;
+        }
+        out->items[0] = row;
+    }
+    am_fact("method", "\"linear: exact elimination\"");
+    for (int i = 0; i < ne; i++) for (int j = 0; j < nvar; j++) if (A->items[i]->items[j]->kind != V_NUM) {
+        am_fact("assuming", "\"generic values of the other symbols: no pivot of the elimination is 0\"");
+        i = ne; break;
+    }
+    return out;
+}
+
 static Value *solve_system(Value **eqs, int ne, int *vars, int nvar) {
+    { Value *r = solve_linear(eqs, ne, vars, nvar); if (r) return r; }
     int is_var[AM_MAXVARS] = {0};
     for (int i = 0; i < nvar; i++) is_var[vars[i]] = 1;
     const char *names[AM_MAXVARS];
@@ -1039,6 +1093,15 @@ static Value *b_apart(Value **a, int n) {
     return res;
 }
 
+/* Si(u), the sine integral: Si(0) = 0, otherwise a term (N gives its digits) */
+static Value *b_Si(Value **a, int n) {
+    need(n, 1, 1, "Si");
+    if (a[0]->kind == V_NUM && ca_check_is_zero(a[0]->num, am_ca) == T_TRUE) return v_num();
+    int neg = a[0]->kind == V_NUM ? (ca_check_is_real(a[0]->num, am_ca) == T_TRUE && ca_check_is_negative_real(a[0]->num, am_ca) == T_TRUE) : am_lead_sign(a[0]) < 0;
+    if (neg) { Value *m = v_neg(a[0]); return v_neg(am_kernel_value("Si", &m, 1)); }   /* odd */
+    return am_kernel_value("Si", a, 1);
+}
+
 /* zeta(n): exact for even n > 0 (Bernoulli numbers and pi) and n <= 0; otherwise a term with certified digits */
 static Value *b_zeta(Value **a, int n) {
     need(n, 1, 1, "zeta");
@@ -1071,13 +1134,40 @@ static Value *b_zeta(Value **a, int n) {
 
 static Value *b_binomial(Value **a, int n) {
     need(n, 2, 2, "binomial");
-    fmpz_t N, K, r; fmpz_init(N); fmpz_init(K); fmpz_init(r);
-    if (!get_fmpz(a[0], N) || !get_fmpz(a[1], K) || !fmpz_fits_si(K) || fmpz_sgn(N) < 0 || !fmpz_abs_fits_ui(N)) am_fail("binomial needs whole numbers n >= 0, k");
-    slong k = fmpz_get_si(K);
-    if (k < 0) fmpz_zero(r); else fmpz_bin_uiui(r, fmpz_get_ui(N), (ulong)k);
-    Value *v = v_num(); ca_set_fmpz(v->num, r, am_ca);
-    fmpz_clear(N); fmpz_clear(K); fmpz_clear(r);
-    return v;
+    fmpz_t K; fmpz_init(K);
+    int kwhole = get_fmpz(a[1], K) && fmpz_cmp_si(K, 10000) <= 0;
+    slong k = kwhole ? fmpz_get_si(K) : 0;
+    fmpz_t N; fmpz_init(N);
+    if (kwhole && get_fmpz(a[0], N) && fmpz_sgn(N) >= 0 && fmpz_abs_fits_ui(N)) {   /* whole numbers: exactly */
+        fmpz_t r; fmpz_init(r);
+        if (k < 0) fmpz_zero(r); else fmpz_bin_uiui(r, fmpz_get_ui(N), (ulong)k);
+        Value *v = v_num(); ca_set_fmpz(v->num, r, am_ca);
+        fmpz_clear(N); fmpz_clear(K); fmpz_clear(r);
+        return v;
+    }
+    fmpz_clear(N); fmpz_clear(K);
+    if (kwhole) {                                              /* binomial(u, k) = u (u - 1) ... (u - k + 1)/k! for any u */
+        if (k < 0) return v_num();
+        Value *p = v_num(); ca_one(p->num, am_ca);
+        for (slong i = 0; i < k; i++) {
+            Value *iv = v_num(); ca_set_si(iv->num, i, am_ca);
+            Value *ip = v_num(); ca_set_si(ip->num, i + 1, am_ca);
+            p = v_div(v_mul(p, v_sub(a[0], iv)), ip);
+        }
+        return p;
+    }
+    if (a[0]->kind == V_NUM && a[1]->kind == V_NUM) {         /* numbers: gamma(u + 1)/(gamma(k + 1) gamma(u - k + 1)) */
+        Value *r = v_num();
+        ca_t g1, g2, t; ca_init(g1, am_ca); ca_init(g2, am_ca); ca_init(t, am_ca);
+        ca_add_ui(t, a[0]->num, 1, am_ca); ca_gamma(r->num, t, am_ca);
+        ca_add_ui(t, a[1]->num, 1, am_ca); ca_gamma(g1, t, am_ca);
+        ca_sub(t, a[0]->num, a[1]->num, am_ca); ca_add_ui(t, t, 1, am_ca); ca_gamma(g2, t, am_ca);
+        ca_mul(g1, g1, g2, am_ca); ca_div(r->num, r->num, g1, am_ca);
+        ca_clear(g1, am_ca); ca_clear(g2, am_ca); ca_clear(t, am_ca);
+        if (ca_is_special(r->num, am_ca)) am_fail("binomial is undefined here");
+        return r;
+    }
+    return am_kernel_value("binomial", a, 2);                   /* binomial(n, k): a function term */
 }
 
 Value *b_integrate(Value **a, int n);
@@ -1130,6 +1220,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"sin", b_sin, "sin(x)", "sine"}, {"cos", b_cos, "cos(x)", "cosine"}, {"tan", b_tan, "tan(x)", "tangent"},
     {"atan", b_atan, "atan(x)", "arctangent"}, {"asin", b_asin, "asin(x)", "arcsine"}, {"acos", b_acos, "acos(x)", "arccosine"},
     {"erf", b_erf, "erf(x)", "the error function"},
+    {"Si", b_Si, "Si(x)", "the sine integral, the integral of sin(t)/t from 0 to x"},
     {"zeta", b_zeta, "zeta(s)", "the Riemann zeta function: exact for even s > 0 and s <= 0, certified digits by N otherwise"},
     {"abs", b_abs, "abs(x)", "absolute value of a number"}, {"re", b_re, "re(x)", "real part"}, {"im", b_im, "im(x)", "imaginary part"},
     {"conj", b_conj, "conj(x)", "complex conjugate"}, {"floor", b_floor, "floor(x)", "largest integer <= x"},

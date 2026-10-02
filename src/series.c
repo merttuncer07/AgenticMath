@@ -65,11 +65,23 @@ static int sign_lead(Ser *a) {                                /* the sign of the
     if (ca_check_lt(c->num, zero()->num, am_ca) == T_TRUE) return -1;
     return 0;
 }
+/* a bounded series is a bounded oscillating quantity times t^v (cos(x) at infinity: v = 0; cos(x)/x: v = 2 in t) */
+static Ser bounded_at(slong v) { Ser r = mk(v, v); r.bounded = 1; return r; }
+
 static Ser add(Ser a, Ser b, int sub) {
+    if (a.bounded && b.bounded) return bounded_at(a.v < b.v ? a.v : b.v);
     if (a.bounded || b.bounded) {
-        Ser o = a.bounded ? b : a;
+        Ser B = a.bounded ? a : b, o = a.bounded ? b : a;
         if (o.huge) return o;
-        am_fail("limit: an oscillating term (sin or cos of a growing argument) that does not die out");
+        if (o.flat) return B;
+        /* o's terms below t^v(B) dominate; from there on the oscillation is all that is known */
+        slong N = o.N < B.v ? o.N : B.v;
+        Ser r = mk(o.v < N ? o.v : N, N);
+        int any = 0;
+        for (slong p = r.v; p < N; p++) { r.c[p - r.v] = (b.bounded || !sub) ? coef(&o, p) : v_neg(coef(&o, p)); if (!is_zero(r.c[p - r.v])) any = 1; }
+        if (!any) return bounded_at(B.v);
+        normalize(&r);
+        return r;
     }
     if (a.huge || b.huge) {
         if (a.huge && b.huge) am_fail("limit: two terms that grow faster than every power; comparing them needs the full Gruntz algorithm, not built yet");
@@ -94,10 +106,13 @@ static Ser add(Ser a, Ser b, int sub) {
 
 static Ser mul(Ser a, Ser b) {
     if (a.bounded || b.bounded) {                              /* bounded times smaller than every power: still that small */
-        Ser o = a.bounded ? b : a;
+        Ser B = a.bounded ? a : b, o = a.bounded ? b : a;
         if (o.flat) return o;
-        if (o.bounded) return o;
-        am_fail("limit: an oscillating term (sin or cos of a growing argument) that does not die out");
+        if (o.bounded) return bounded_at(B.v + o.v);
+        if (o.huge) am_fail("limit: an oscillating term times one larger than every power");
+        Ser on = o; normalize(&on);
+        if (len(&on) == 0) return bounded_at(B.v + on.N);    /* o known only to be O(t^N) */
+        return bounded_at(B.v + on.v);
     }
     if (a.huge || b.huge) {
         if (a.flat || b.flat || (a.huge && b.huge && 0)) am_fail("limit: a product of a term smaller and a term larger than every power; needs the full Gruntz algorithm, not built yet");
@@ -233,6 +248,17 @@ static Ser apply(const char *h, Ser u, int x, Value *a, slong N) {
             return constant(num_si(sg), N + 64);
         }
     }
+    if (u.v < 0 && !strcmp(h, "Si")) {                        /* Si(u) = sign(u) pi/2 - cos(u)/u + O(1/u^2), u large and real */
+        int sg = sign_lead(&u);
+        if (sg && ((-u.v) % 2 == 0 || cur_dir)) {
+            if ((-u.v) & 1) sg *= cur_dir;
+            Value *pi = v_num(); ca_pi(pi->num, am_ca);
+            Ser r = add(constant(v_mul(num_q(sg, 2), pi), N + 64), mul(apply("cos", u, x, a, N), inv(u)), 1);
+            if (r.N > -2 * u.v) r.N = -2 * u.v;
+            if (r.N > N) r.N = N;
+            return r;
+        }
+    }
     if (u.v < 0 && (!strcmp(h, "sin") || !strcmp(h, "cos"))) {   /* bounded, oscillating, for a real growing argument */
         Value *lead = am_reevaluate(u.c[0]);
         if (lead->kind == V_NUM && ca_check_is_real(lead->num, am_ca) == T_TRUE) { Ser r = mk(0, N); r.bounded = 1; return r; }
@@ -300,6 +326,10 @@ static Ser apply(const char *h, Ser u, int x, Value *a, slong N) {
         Ser e = apply("exp", scale(uu, num_si(-1)), x, a, N + 2);
         Ser q = scale(mul(du, e), v_div(num_si(2), call1("sqrt", pi)));
         out = integ(q, call1("erf", c0));
+    } else if (!strcmp(h, "Si")) {                            /* Si' = sin(u)/u */
+        Ser du = deriv(u);
+        Ser q = mul(du, mul(apply("sin", u, x, a, N + 2), inv(u)));
+        out = integ(q, call1("Si", c0));
     } else if (!strcmp(h, "atan") || !strcmp(h, "asin") || !strcmp(h, "acos")) {
         Ser du = deriv(u), uu = mul(u, u);
         Ser den;
@@ -355,11 +385,18 @@ static Ser of_value(Value *f, int x, Value *a, slong N) {
 
 /* the series of f at x = a to order N (absolute), retrying with more terms when divisions lose some */
 static Ser series_at(Value *f, int x, Value *a, slong N) {
+    Ser last; int have = 0;
     for (slong extra = 0; extra <= 24; extra += 4) {
         Ser s = of_value(f, x, a, N + extra);
+        last = s; have = 1;
         if (s.flat || s.huge) return s;
-        if (s.bounded) am_fail("limit: the expression oscillates (sin or cos of a growing argument) and does not settle");
+        if (s.bounded && s.v <= 0) am_fail("limit: the expression oscillates (sin or cos of a growing argument) and does not settle");
+        if (s.bounded) return s;                               /* an oscillation that dies out like t^v */
         if (s.N >= N) { s.N = N; normalize(&s); if (s.v > N) s.v = N; return s; }
+    }
+    if (have) {                                                /* precision capped (by an oscillating term): the known terms */
+        normalize(&last);
+        if (len(&last) > 0 || last.N > 0) return last;
     }
     am_fail("series: could not reach the order asked for");
 }
@@ -465,6 +502,7 @@ Value *b_taylor(Value **a, int n) {
     probable_zero = 0;
     cur_dir = 0;
     Ser s = series_at(a[0], x, pt, N);
+    if (s.bounded) am_fail("series: an oscillating term with no power series here (sin or cos of a growing argument)");
     if (s.flat || s.huge) am_fail("taylor: the expansion involves exp of an infinite term (not a power series)");
     if (probable_zero) am_status(S_PROBABLE, "exact coefficients, but a coefficient was taken as 0 on numerical evidence");
     else am_status(S_EXACT, "the terms of the series below order %ld, exactly", (long)N);
@@ -486,6 +524,7 @@ Value *b_series(Value **a, int n) {
     probable_zero = 0;
     cur_dir = 0;
     Ser s = series_at(a[0], x, pt, N);
+    if (s.bounded) am_fail("series: an oscillating term with no power series here (sin or cos of a growing argument)");
     if (s.flat || s.huge) am_fail("series: the expansion involves exp of an infinite term (not a power series)");
     char *txt = series_text(s, x, pt, N, 1);
     Value *r = v_str(txt);
@@ -555,13 +594,19 @@ Value *b_limit(Value **a, int n) {
     cur_dir = dir ? 1 : 0;                                     /* after the substitutions, t -> 0+ for one-sided limits */
     for (;;) {
         s = series_at(f, x, pt, N);
-        if (s.flat || s.huge) {
-            Value *res = s.flat ? zero() : infinity(s.huge);
-            am_status(S_PROVED, s.flat ? "an exponential smaller than every power dominates: the limit is 0" : "an exponential larger than every power dominates");
+        if (s.flat || s.huge || s.bounded) {
+            Value *res = (s.flat || s.bounded) ? zero() : infinity(s.huge);
+            am_status(S_PROVED, s.bounded ? "a bounded oscillating term times a power that tends to 0: the limit is 0" : s.flat ? "an exponential smaller than every power dominates: the limit is 0" : "an exponential larger than every power dominates");
             if (dir) am_fact("direction", "\"%s\"", dir > 0 ? "+" : "-");
             return res;
         }
         if (len(&s) > 0) break;
+        if (s.N > 0 && (s.N < N || N * 2 > 64)) {              /* O(t^N) with N > 0: the limit is 0 */
+            if (probable_zero) am_status(S_PROBABLE, "every term up to t^%ld vanishes (some only at random points): the expression is O(t^%ld), the limit 0", (long)s.N, (long)s.N);
+            else am_status(S_PROVED, "every known term vanishes: the expression is O(t^%ld) with t -> 0 at the point, so the limit is 0", (long)s.N);
+            if (dir) am_fact("direction", "\"%s\"", dir > 0 ? "+" : "-");
+            return zero();
+        }
         if ((N *= 2) > 64) am_fail("limit: the series vanishes to order 64; the limit may be 0 but this is not proved");
     }
     Value *c = s.c[0];

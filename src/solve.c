@@ -28,6 +28,8 @@ static Value *from_mpoly(const fmpz_mpoly_t p) {
     return am_reevaluate(r);
 }
 
+static int real_only;                  /* abs was inverted: the solutions are the real ones */
+
 /* the integer parameters brought in by periodic inverses */
 static int nparams, params[16];
 static Value *new_param(void) {
@@ -128,6 +130,12 @@ static void invert(int g, Value *c, int x, Cands *out, int depth) {
     } else if (!strcmp(h, "tan")) {
         Value *n = new_param();
         solve_in(v_sub(w, v_add(call1("atan", c), v_mul(pi_v(), n))), x, out, depth + 1);
+    } else if (!strcmp(h, "abs")) {                               /* |w| = c: w = c or w = -c (real w) */
+        real_only = 1;
+        Value *z = num_si(0);
+        if (c->kind == V_NUM && (ca_check_is_real(c->num, am_ca) != T_TRUE || ca_check_lt(c->num, z->num, am_ca) == T_TRUE)) return;
+        solve_in(v_sub(w, c), x, out, depth + 1);
+        if (!is_zero_num(c)) solve_in(v_add(w, c), x, out, depth + 1);
     } else if (!strcmp(h, "asin")) solve_in(v_sub(w, call1("sin", c)), x, out, depth + 1);
     else if (!strcmp(h, "acos")) solve_in(v_sub(w, call1("cos", c)), x, out, depth + 1);
     else if (!strcmp(h, "atan")) solve_in(v_sub(w, call1("tan", c)), x, out, depth + 1);
@@ -250,7 +258,7 @@ static int verify(Value *e, int x, Value *c) {      /* 1 proved, 2 probable, 0 f
 }
 
 Value *am_solve1(Value *e, int x) {
-    nparams = 0;
+    nparams = 0; real_only = 0;
     Cands c = {0};
     int mute = am_fact_mute;
     solve_in(e, x, &c, 0);
@@ -296,6 +304,7 @@ Value *am_solve1(Value *e, int x) {
     }
     if (realknown) am_fact("real_solutions", "%s", reals);
     if (dropped) am_fact("dropped", "%d", dropped);
+    if (real_only) am_fact("domain", "\"real: abs(w) = c was solved as w = c or w = -c, for real w\"");
     return out;
 }
 
