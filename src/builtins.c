@@ -869,12 +869,17 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
 /* the documentation of the built-ins: i-th entry, or NULL past the end */
 int am_builtin_doc(int i, const char **name, const char **sig, const char **doc) {
     int nt = 0; while (TABLE[nt].name) nt++;
-    if (i >= nt) return am_matrix_doc(i - nt, name, sig, doc);
+    if (i >= nt) {
+        int nm = 0; const char *a, *b, *c; while (am_matrix_doc(nm, &a, &b, &c)) nm++;
+        if (i - nt < nm) return am_matrix_doc(i - nt, name, sig, doc);
+        return am_discrete_doc(i - nt - nm, name, sig, doc);
+    }
     *name = TABLE[i].name; *sig = TABLE[i].sig; *doc = TABLE[i].doc;
     return 1;
 }
 
 Builtin am_builtin(const char *name, size_t len) {
     for (int i = 0; TABLE[i].name; i++) if (strlen(TABLE[i].name) == len && !strncmp(TABLE[i].name, name, len)) return TABLE[i].f;
-    return am_matrix_builtin(name, len);
+    Builtin b = am_matrix_builtin(name, len);
+    return b ? b : am_discrete_builtin(name, len);
 }

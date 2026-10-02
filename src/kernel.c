@@ -59,8 +59,58 @@ int am_gen_of(const Value *v) {
     return -1;
 }
 
+/* exp(c*log(b)) is written b^c: the name only, the value is the same */
+static char *power_name(Value *u) {
+    if (u->kind != V_RF) return NULL;
+    int used[AM_MAXVARS] = {0}, lg = -1;
+    fmpz_mpoly_q_used_vars(used, u->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++)
+        if (used[i] && am_vars[i].head && !strcmp(am_vars[i].head, "log") && am_vars[i].nargs == 1) { if (lg >= 0) return NULL; lg = i; }
+    if (lg < 0) return NULL;
+    Value *c = v_div(u, am_gen(lg));
+    if (!am_free_of(c, lg)) return NULL;
+    Value *b = am_vars[lg].args[0];
+    char *bs = v_str_of(b), *cs = v_str_of(c);
+    int bpar = bs[0] == '-' || strchr(bs, '/') || strchr(bs, ' ') || strchr(bs, '*') || strchr(bs, '^');
+    int cpar = strchr(cs, ' ') || strchr(cs, '/') || strchr(cs, '*') || cs[0] == '-';
+    char *name = malloc(strlen(bs) + strlen(cs) + 8);
+    sprintf(name, bpar ? (cpar ? "(%s)^(%s)" : "(%s)^%s") : (cpar ? "%s^(%s)" : "%s^%s"), bs, cs);
+    free(bs); free(cs);
+    return name;
+}
+
+/* an existing function term with this head and these arguments (whatever its display name) */
+static int find_term(const char *head, Value **args, int n) {
+    for (int i = 0; i < am_nvars; i++) {
+        if (!am_vars[i].kernel || !am_vars[i].head || strcmp(am_vars[i].head, head) || am_vars[i].nargs != n) continue;
+        int same = 1;
+        for (int j = 0; j < n && same; j++) {
+            char *a = v_str_of(am_vars[i].args[j]), *b = v_str_of(args[j]);
+            same = !strcmp(a, b);
+            free(a); free(b);
+        }
+        if (same) return i;
+    }
+    return -1;
+}
+
 /* head(args) as a kernel: its generator */
 Value *am_kernel_value(const char *head, Value **args, int n) {
+    { int t = find_term(head, args, n); if (t >= 0) return am_gen(t); }
+    if (!strcmp(head, "exp") && n == 1) {
+        char *pn = power_name(args[0]);
+        if (pn) {
+            int k = find(pn, strlen(pn));
+            if (k < 0) {
+                k = add(pn, strlen(pn));
+                am_vars[k].kernel = 1; am_vars[k].head = strdup("exp"); am_vars[k].nargs = 1;
+                am_vars[k].args = malloc(sizeof(Value *));
+                am_vars[k].args[0] = v_copy(args[0]); am_pool_keep(am_vars[k].args[0]);
+            }
+            free(pn);
+            return am_gen(k);
+        }
+    }
     size_t cap = strlen(head) + 4;
     char **s = malloc((size_t)(n ? n : 1) * sizeof *s);
     for (int i = 0; i < n; i++) { s[i] = v_str_of(args[i]); cap += strlen(s[i]) + 2; }
@@ -298,4 +348,28 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
         zeros++;
     }
     return zeros == 5 ? 2 : -1;
+}
+
+/* base^e for a symbolic exponent: exp(e*log(base)) as a value, named base^e */
+Value *am_power_kernel(Value *base, Value *e) {
+    Value *b = base;
+    Value *l = am_call("log", &b, 1);
+    Value *arg = v_mul(e, l);
+    char *bs = v_str_of(base), *es = v_str_of(e);
+    int bpar = bs[0] == '-' || strchr(bs, '/') || strchr(bs, ' ') || strchr(bs, '*') || strchr(bs, '^');
+    int epar = strchr(es, ' ') || strchr(es, '/') || strchr(es, '*') || es[0] == '-';
+    char *name = malloc(strlen(bs) + strlen(es) + 8);
+    sprintf(name, bpar ? (epar ? "(%s)^(%s)" : "(%s)^%s") : (epar ? "%s^(%s)" : "%s^%s"), bs, es);
+    free(bs); free(es);
+    int k = find_term("exp", &arg, 1);
+    if (k >= 0) { free(name); return am_gen(k); }
+    k = find(name, strlen(name));
+    if (k < 0) {
+        k = add(name, strlen(name));
+        am_vars[k].kernel = 1; am_vars[k].head = strdup("exp"); am_vars[k].nargs = 1;
+        am_vars[k].args = malloc(sizeof(Value *));
+        am_vars[k].args[0] = v_copy(arg); am_pool_keep(am_vars[k].args[0]);
+    }
+    free(name);
+    return am_gen(k);
 }

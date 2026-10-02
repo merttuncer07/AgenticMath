@@ -69,6 +69,7 @@ Value *am_gen(int i);
 int am_gen_of(const Value *v);                     /* the generator v is exactly, or -1 */
 Value *am_kernel_value(const char *head, Value **args, int n);
 Value *am_number_kernel(const Value *num);
+Value *am_power_kernel(Value *base, Value *e);
 Value *am_number_rf(const Value *num);            /* an irrational number among variables, canonically */
 void am_reduce_squares(Value *v);                 /* sqrt(D)^2 -> D, I^2 -> -1 in a rational function */
 Value *am_normal_form(Value *v);                   /* tan as sin/cos, sin^2 + cos^2 = 1 reduced */
@@ -110,6 +111,8 @@ Value *am_matmul(Value *a, Value *b);
 Value *am_matvec(Value *a, Value *v);
 Value *am_matpow(Value *a, Value *e);
 Builtin am_matrix_builtin(const char *name, size_t len);
+Builtin am_discrete_builtin(const char *name, size_t len);
+int am_discrete_doc(int i, const char **name, const char **sig, const char **doc);
 int am_matrix_doc(int i, const char **name, const char **sig, const char **doc);
 char *am_reference(const char *topic);          /* the language reference, or one function's entry (malloc'd) */
 const char *am_suggest(const char *name);        /* a known function close to a misspelled name, or NULL */

@@ -208,6 +208,7 @@ Value *v_pow(const Value *a, const Value *b) {
             return v_pow(r, kv);
         }
         fmpq_clear(e);
+        if (a->kind == V_NUM || a->kind == V_RF) return am_power_kernel((Value *)a, (Value *)b);   /* exp(b log a), named a^b */
         Value *arg = (Value *)a;
         Value *l = am_call("log", &arg, 1);
         Value *p = v_mul((Value *)b, l);
@@ -276,6 +277,7 @@ static void put_mpoly(Str *b, const fmpz_mpoly_t p, int paren) {
         const char *nm = am_varnames[i];
         int wrap = am_vars[i].kernel && !am_vars[i].head && (strchr(nm, '/') || strchr(nm, '+') || strchr(nm, ' ') || nm[0] == '-')
                    && strncmp(nm, "RootOf(", 7) && strncmp(nm, "sqrt(", 5);
+        if (q[1] == '^' && (strchr(nm, '^') || nm[0] == '-')) wrap = 1;      /* (2^x)^2, not 2^x^2 */
         if (wrap) sput(b, "(");
         sput(b, nm);
         if (wrap) sput(b, ")");
@@ -391,7 +393,7 @@ static void put_value(Str *b, const Value *v) {
         put_mpoly(b, fmpz_mpoly_q_numref(v->rf), 1);
         sput(b, "/");
         char *s = fmpz_mpoly_get_str_pretty(d, am_varnames, am_mp);
-        int par = is_sum(s) || strchr(s, '*') || strchr(s, '^');
+        int par = is_sum(s) || strchr(s, '*');
         flint_free(s);
         {   /* a single generator, such as sqrt(x^2 + 1), needs no parentheses */
             Value tmp; memset(&tmp, 0, sizeof tmp); tmp.kind = V_RF;
