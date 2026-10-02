@@ -110,11 +110,16 @@ Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if
 - `sum(f, k, a, b)`: term by term, or closed forms, each checked: polynomial terms (`sum(k^3, k, 1, n)` →
   `(n^4 + 2*n^3 + n^2)/4`), geometric terms (to `oo` when |r| < 1), hypergeometric terms by Gosper's algorithm
   (`sum(k*2^k, k, 1, n)` → `2*n*2^n - 2*2^n + 2`, `sum(1/(k*(k+1)), k, 1, oo)` → 1; when it fails, that is a proof
-  that no hypergeometric closed form exists), p-series through `zeta` (`sum(1/k^2, k, 1, oo)` → `pi^2/6`).
+  that no hypergeometric closed form exists), p-series through `zeta` (`sum(1/k^2, k, 1, oo)` → `pi^2/6`), and the
+  known hypergeometric series to infinity, identified from the term ratio: `sum(x^k/k!, k, 0, oo)` → `exp(x)`,
+  `sum((-1)^k*x^(2k)/(2k)!, k, 0, oo)` → `cos(x)`, `sum((-1)^k/(2k+1), k, 0, oo)` → `pi/4`,
+  `sum(x^k/k, k, 1, oo)` → `-log(-x + 1)` with the condition `|x| < 1` stated.
+- `product(f, k, a, b)`; `factorial(n)` (also `n!`) for whole numbers, other numbers (gamma) and expressions.
 - `zeta(s)`: exact for even s > 0 and s ≤ 0; otherwise a term whose digits `N` certifies.
 - `dsolve(eq, y, x[, [y(0) = a, y'(0) = b]])`: linear equations with constant coefficients of any order (complex
-  and repeated roots; right-hand sides by variation of parameters) and first-order linear equations; `y'`, `y''`
-  for derivatives; every solution put back into the equation. `dsolve(y'' + y = 1/cos(x), y, x)` →
+  and repeated roots; right-hand sides by variation of parameters), first-order linear equations, and separable
+  first-order equations (`dsolve(y' = x/y, y, x, [y(0) = 2])` → `y = sqrt(x^2 + 4)`; the implicit form when y
+  cannot be isolated); `y'`, `y''` for derivatives; every solution put back into the equation. `dsolve(y'' + y = 1/cos(x), y, x)` →
   `y = x*sin(x) + cos(x)*log(cos(x)) + cos(x)*C1 + sin(x)*C2  [proved]`.
 - Exponentials combine (`exp(x)*exp(-x)` is 1), `sin(-x)` is `-sin(x)`, and checks expand multiple angles.
 
@@ -164,6 +169,9 @@ point where the sides differ, found by certified evaluation, proves `false`; equ
 | `sqrt exp log sin cos tan atan asin acos abs re im conj floor ceil gamma erf zeta` | on numbers, exactly |
 | `sec csc cot sinh cosh tanh asinh acosh atanh`, `arcsin arccos arctan log10 log2 factorial` | defined in the prelude |
 | `simplify`, `together`, `coeff(p, x, k)`, `free(e, x)` | |
+| `min max sort mean median variance pvariance stdev pstdev norm round arg` | lists of numbers, ordered exactly |
+| `diff(f, x, y)`, `diff(f, x, 2, y)`, `integrate(f, [x, a, b])` | several variables; the list form of limits |
+| `Si`, `zeta`, `factorial`, `fibonacci`, `lucas`, `bernoulli`, `partitions` | |
 
 ## Build
     make deps    # FLINT 3.3.1 and msolve 0.9.0, static, into deps/
