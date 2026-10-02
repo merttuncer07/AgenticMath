@@ -622,9 +622,25 @@ static void eq_as_equation(Node *n) {
     else if (n->k == N_LIST) for (int i = 0; i < n->n; i++) eq_as_equation(n->a[i]);
 }
 
+static Value *eval(Node *n);
+static int is_relation(const Node *n) {
+    return n->k == N_BIN && (!strcmp(n->op, "<") || !strcmp(n->op, "<=") || !strcmp(n->op, ">") || !strcmp(n->op, ">="));
+}
+
 static Value *eval_call(Node *n) {
     if (!strcmp(n->s, "solve") || !strcmp(n->s, "dsolve") || !strcmp(n->s, "nsolve") || !strcmp(n->s, "roots") || !strcmp(n->s, "realroots"))
         for (int i = 0; i < n->n; i++) eq_as_equation(n->a[i]);
+    if (!strcmp(n->s, "solve") && n->n >= 1 && is_relation(n->a[0])) {   /* solve(x^2 < 4, x): an inequality */
+        Value *r = v_list(2); r->kind = V_EQ;
+        r->items[0] = eval(n->a[0]->a[0]); r->items[1] = eval(n->a[0]->a[1]);
+        r->str = strdup(n->a[0]->op);
+        Value **args = calloc((size_t)n->n, sizeof(Value *));
+        args[0] = r;
+        for (int i = 1; i < n->n; i++) args[i] = eval(n->a[i]);
+        Value *res = am_call("solve", args, n->n);
+        free(args);
+        return res;
+    }
     /* special forms: their arguments are not all evaluated first */
     if (!strcmp(n->s, "if")) {
         if (n->n != 3) am_fail("if(condition, then, else) takes three arguments");

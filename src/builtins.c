@@ -911,6 +911,10 @@ static Value *solve_system(Value **eqs, int ne, int *vars, int nvar) {
 /* solve(equation or list of equations, variable or list of variables) */
 static Value *b_solve(Value **a, int n) {
     need(n, 1, 2, "solve");
+    if (a[0]->kind == V_EQ && a[0]->str) {
+        Value *g = v_sub(a[0]->items[0], a[0]->items[1]);
+        return am_solve_ineq(g, a[0]->str, main_var(g, a, n, 1, "solve"));
+    }
     Value *eqs[64]; int ne = 0;
     if (a[0]->kind == V_LIST) for (int i = 0; i < a[0]->n && ne < 64; i++) eqs[ne++] = eq_to_expr(a[0]->items[i]);
     else eqs[ne++] = eq_to_expr(a[0]);
@@ -1112,6 +1116,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"degree", b_degree, "degree(p[, x])", "total degree, or the degree in x"},
     {"expand", b_expand, "expand(e)", "the expanded form (every polynomial result is already expanded)"},
     {"apart", b_apart, "apart(f[, x])", "partial fractions over Q: the polynomial part plus c(x)/p(x)^j over the irreducible factors p of the denominator (text to read; the terms are in the facts)"},
+    {"nsolve", am_nsolve, "nsolve(eq, x, a, b[, digits])", "every real root of an equation in [a, b], each certified to the digits shown (Arb root isolation: a sign change and a nonzero derivative)"},
     {"partfrac", b_apart, "partfrac(f[, x])", "the same as apart"},
     {"together", b_simplify, "together(e)", "one fraction in lowest terms (every rational result already is one)"},
     {"simplify", b_simplify, "simplify(e)", "a shorter equal form: lowest terms, exponentials combined, trigonometric identities (sin^2 + cos^2 = 1, multiple angles) and sqrt(u)^2 = u applied when they shorten it"},

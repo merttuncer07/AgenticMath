@@ -102,7 +102,9 @@ int am_mcp(void);
 void am_load_library(void);                     /* the library written in the language (lib/ *.am, built in) */
 Value *am_call(const char *name, Value **args, int n);
 int am_try(Value *(*fn)(void *), void *ctx, Value **out);   /* errors caught: 0 when fn failed */
-Value *am_solve1(Value *e, int x);              /* one equation e = 0 in x (solve.c) */
+Value *am_solve1(Value *e, int x);
+Value *am_nsolve(Value **a, int n);              /* certified real roots on an interval (solve.c) */
+Value *am_solve_ineq(Value *g, const char *op, int x);   /* g op 0 over the reals (solve.c) */              /* one equation e = 0 in x (solve.c) */
 Value *am_reevaluate(Value *v);                 /* function terms evaluated again: numbers back to numbers */
 Value *am_subs_rf(const Value *f, Value **val);  /* values for the generators */
 int am_free_of(const Value *v, int x);

@@ -217,7 +217,7 @@ static void solve_in(Value *e, int x, Cands *out, int depth) {
         }
         if (!bare && exp_multiples(f, x, ks, nk, out, depth)) continue;
         fmpz_mpoly_factor_clear(fac, am_mp);
-        am_fail("solve: %s appears both bare and inside function terms (or in several unrelated ones); no exact method yet", am_varnames[x]);
+        am_fail("solve: %s appears both bare and inside function terms (or in several unrelated ones); no exact method yet. nsolve(eq, %s, a, b) gives the certified real roots in [a, b]", am_varnames[x], am_varnames[x]);
     }
     fmpz_mpoly_factor_clear(fac, am_mp);
 }
@@ -298,3 +298,202 @@ Value *am_solve1(Value *e, int x) {
     if (dropped) am_fact("dropped", "%d", dropped);
     return out;
 }
+
+/* ---------------- inequalities: g op 0 over the reals, g a rational function of x ---------------- */
+
+#include <flint/fmpz_poly.h>
+#include <flint/qqbar.h>
+
+static int sign_at(const fmpz_poly_t P, const ca_t t) {        /* the exact sign of P(t), t real */
+    ca_t s; ca_init(s, am_ca);
+    for (slong k = fmpz_poly_degree(P); k >= 0; k--) { ca_mul(s, s, t, am_ca); ca_add_fmpz(s, s, P->coeffs + k, am_ca); }
+    Value *z = num_si(0);
+    int r = ca_check_gt(s, z->num, am_ca) == T_TRUE ? 1 : ca_check_lt(s, z->num, am_ca) == T_TRUE ? -1 : ca_check_is_zero(s, am_ca) == T_TRUE ? 0 : 2;
+    ca_clear(s, am_ca);
+    if (r == 2) am_fail("solve: a sign could not be decided");
+    return r;
+}
+
+static int wants(int sign, const char *op) {
+    if (!strcmp(op, "<")) return sign < 0;
+    if (!strcmp(op, "<=")) return sign <= 0;
+    if (!strcmp(op, ">")) return sign > 0;
+    return sign >= 0;
+}
+
+Value *am_solve_ineq(Value *g, const char *op, int x) {
+    g = am_reevaluate(g);
+    fmpz_poly_t N, D, P; fmpz_poly_init(N); fmpz_poly_init(D); fmpz_poly_init(P);
+    if (g->kind == V_NUM) {
+        if (ca_check_is_real(g->num, am_ca) != T_TRUE) am_fail("solve: the inequality compares a number that is not real");
+        fmpz_poly_zero(N);
+        Value *z = num_si(0);
+        int s = ca_check_gt(g->num, z->num, am_ca) == T_TRUE ? 1 : ca_check_is_zero(g->num, am_ca) == T_TRUE ? 0 : -1;
+        am_status(S_PROVED, "a constant comparison");
+        return v_str(wants(s, op) ? "every real x" : "no real x");
+    }
+    int used[AM_MAXVARS] = {0};
+    if (g->kind != V_RF) am_fail("solve: expected an inequality");
+    fmpz_mpoly_q_used_vars(used, g->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) if (used[i] && i != x) am_fail("solve: inequalities are solved for rational functions of %s with number coefficients", am_varnames[x]);
+    fmpz_mpoly_get_fmpz_poly(N, fmpz_mpoly_q_numref(g->rf), x, am_mp);
+    fmpz_mpoly_get_fmpz_poly(D, fmpz_mpoly_q_denref(g->rf), x, am_mp);
+    fmpz_poly_mul(P, N, D);                                     /* the sign of N/D where D != 0 */
+    /* the real roots of N and D, sorted, each once */
+    slong dn = fmpz_poly_degree(N), dd = fmpz_poly_degree(D);
+    qqbar_ptr rn = dn > 0 ? _qqbar_vec_init(dn) : NULL, rd = dd > 0 ? _qqbar_vec_init(dd) : NULL;
+    if (dn > 0) qqbar_roots_fmpz_poly(rn, N, 0);
+    if (dd > 0) qqbar_roots_fmpz_poly(rd, D, 0);
+    slong cap = (dn > 0 ? dn : 0) + (dd > 0 ? dd : 0) + 1, np = 0;
+    qqbar_ptr pts = _qqbar_vec_init(cap);
+    int *pole = calloc((size_t)cap, sizeof(int));
+    for (int w = 0; w < 2; w++) {
+        qqbar_ptr r = w ? rd : rn; slong d = w ? dd : dn;
+        for (slong i = 0; i < d; i++) {
+            if (!qqbar_is_real(r + i)) continue;
+            slong j; for (j = 0; j < np; j++) if (qqbar_equal(pts + j, r + i)) break;
+            if (j == np) { qqbar_set(pts + np, r + i); pole[np] = w; np++; }
+            else if (w) pole[j] = 1;
+        }
+    }
+    for (slong i = 1; i < np; i++)                              /* insertion sort */
+        for (slong j = i; j > 0 && qqbar_cmp_re(pts + j, pts + j - 1) < 0; j--) { qqbar_swap(pts + j, pts + j - 1); int t = pole[j]; pole[j] = pole[j - 1]; pole[j - 1] = t; }
+    /* gap i lies between point i - 1 and point i (gap 0 from -oo, gap np to +oo) */
+    int *gap = calloc((size_t)(np + 1), sizeof(int)), *at = calloc((size_t)(np + 1), sizeof(int));
+    ca_t t, u; ca_init(t, am_ca); ca_init(u, am_ca);
+    for (slong i = 0; i <= np; i++) {
+        if (np == 0) ca_zero(t, am_ca);
+        else if (i == 0) { ca_set_qqbar(t, pts, am_ca); ca_sub_ui(t, t, 1, am_ca); }
+        else if (i == np) { ca_set_qqbar(t, pts + np - 1, am_ca); ca_add_ui(t, t, 1, am_ca); }
+        else { ca_set_qqbar(t, pts + i - 1, am_ca); ca_set_qqbar(u, pts + i, am_ca); ca_add(t, t, u, am_ca); ca_div_ui(t, t, 2, am_ca); }
+        gap[i] = wants(sign_at(P, t), op);
+        if (i < np) at[i] = !pole[i] && wants(0, op);           /* at a root of N: g = 0 */
+    }
+    ca_clear(t, am_ca); ca_clear(u, am_ca);
+    /* the solution set as intervals: runs of satisfied gaps and points */
+    char buf[8192]; size_t bl = 0; int nint = 0;
+    char js[8192]; size_t jl = 0;
+    jl += (size_t)snprintf(js + jl, sizeof js - jl, "[");
+    /* walk the sequence gap0, pt0, gap1, pt1, ..., gap_np: element e even is gap e/2, odd is point (e-1)/2 */
+    slong ne = 2 * np + 1;
+    for (slong e = 0; e < ne; ) {
+        int ok = (e & 1) ? at[(e - 1) / 2] : gap[e / 2];
+        if (!ok) { e++; continue; }
+        slong f = e;
+        while (f + 1 < ne && ((f + 1) & 1 ? at[f / 2] : gap[(f + 1) / 2])) f++;
+        /* from element e to element f */
+        char *lo = NULL, *hi = NULL; int lo_closed = 0, hi_closed = 0;
+        if (e & 1) { Value *v = v_num(); ca_set_qqbar(v->num, pts + (e - 1) / 2, am_ca); lo = v_str_of(v); lo_closed = 1; }
+        else if (e > 0) { Value *v = v_num(); ca_set_qqbar(v->num, pts + e / 2 - 1, am_ca); lo = v_str_of(v); }
+        if (f & 1) { Value *v = v_num(); ca_set_qqbar(v->num, pts + (f - 1) / 2, am_ca); hi = v_str_of(v); hi_closed = 1; }
+        else if (f / 2 < np) { Value *v = v_num(); ca_set_qqbar(v->num, pts + f / 2, am_ca); hi = v_str_of(v); }
+        const char *X = am_varnames[x];
+        char piece[2048];
+        if (e == f && (e & 1)) snprintf(piece, sizeof piece, "%s = %s", X, lo);
+        else if (!lo && !hi) snprintf(piece, sizeof piece, "every real %s", X);
+        else if (!lo) snprintf(piece, sizeof piece, "%s %s %s", X, hi_closed ? "<=" : "<", hi);
+        else if (!hi) snprintf(piece, sizeof piece, "%s %s %s", X, lo_closed ? ">=" : ">", lo);
+        else snprintf(piece, sizeof piece, "%s %s %s %s %s", lo, lo_closed ? "<=" : "<", X, hi_closed ? "<=" : "<", hi);
+        bl += (size_t)snprintf(buf + bl, sizeof buf - bl, "%s%s", nint ? " or " : "", piece);
+        char *pj = am_json_str(piece);
+        jl += (size_t)snprintf(js + jl, sizeof js - jl, "%s%s", nint ? ", " : "", pj);
+        free(pj); free(lo); free(hi);
+        nint++;
+        e = f + 1;
+    }
+    snprintf(js + jl, sizeof js - jl, "]");
+    if (!nint) snprintf(buf, sizeof buf, "no real %s", am_varnames[x]);
+    am_status(S_PROVED, "exact real roots of the numerator and denominator; the sign on each interval between them decided exactly");
+    am_fact("intervals", "%s", js);
+    free(gap); free(at); free(pole);
+    _qqbar_vec_clear(pts, cap);
+    if (rn) _qqbar_vec_clear(rn, dn);
+    if (rd) _qqbar_vec_clear(rd, dd);
+    fmpz_poly_clear(N); fmpz_poly_clear(D); fmpz_poly_clear(P);
+    return v_str(buf);
+}
+
+/* ---------------- nsolve: certified real roots on an interval ---------------- */
+
+#include <flint/arb_calc.h>
+
+int am_eval_acb(acb_t out, Value *f, int x, const acb_t z, int analytic, slong prec);
+
+typedef struct { Value *f, *df; int x; int failed; } RealFn;
+
+static int real_fn(arb_ptr out, const arb_t inp, void *param, slong order, slong prec) {
+    RealFn *F = param;
+    acb_t z, v; acb_init(z); acb_init(v);
+    acb_set_arb(z, inp);
+    for (slong k = 0; k < order && k < 2; k++) {
+        if (!am_eval_acb(v, k ? F->df : F->f, F->x, z, 0, prec) || !arb_contains_zero(acb_imagref(v))) { F->failed = 1; arb_indeterminate(out + k); }
+        else arb_set(out + k, acb_realref(v));
+    }
+    acb_clear(z); acb_clear(v);
+    return 0;
+}
+
+static Value *b_nsolve_impl(Value **a, int n) {
+    if (n < 4 || n > 5) am_fail("nsolve(eq, x, a, b[, digits]): the real roots of eq in [a, b]");
+    Value *e = a[0]->kind == V_EQ ? v_sub(a[0]->items[0], a[0]->items[1]) : a[0];
+    int x = am_gen_of(a[1]);
+    if (x < 0 || am_vars[x].kernel) am_fail("nsolve: the second argument must be a variable");
+    slong digits = 15;
+    if (n == 5) { fmpq_t q; fmpq_init(q); if (!v_is_rational(a[4], q) || !fmpz_is_one(fmpq_denref(q))) am_fail("nsolve: digits must be a whole number"); digits = fmpz_get_si(fmpq_numref(q)); fmpq_clear(q); }
+    if (digits < 1 || digits > 1000) am_fail("nsolve: digits between 1 and 1000");
+    slong prec = (slong)(digits * 3.33) + 30;
+    acb_t A, B; acb_init(A); acb_init(B);
+    if (!am_eval_acb(A, a[2], -1, A, 0, prec) || !am_eval_acb(B, a[3], -1, B, 0, prec) || !arb_is_zero(acb_imagref(A)) || !arb_is_zero(acb_imagref(B)))
+        am_fail("nsolve: the ends must be real numbers");
+    Value *da[2] = {e, am_gen(x)};
+    RealFn F = {e, am_call("diff", da, 2), x, 0};
+    arf_interval_t block; arf_interval_init(block);
+    arf_set_mag(&block->a, arb_radref(acb_realref(A))); arf_sub(&block->a, arb_midref(acb_realref(A)), &block->a, prec, ARF_RND_FLOOR);
+    arf_set_mag(&block->b, arb_radref(acb_realref(B))); arf_add(&block->b, arb_midref(acb_realref(B)), &block->b, prec, ARF_RND_CEIL);
+    if (arf_cmp(&block->a, &block->b) >= 0) am_fail("nsolve: the interval is empty");
+    arf_interval_ptr blocks = NULL; int *flags = NULL;
+    slong nb = arb_calc_isolate_roots(&blocks, &flags, real_fn, &F, block, 60, 200000, 1000, 64);
+    if (F.failed) am_fail("nsolve: the equation is not real and finite everywhere on the interval");
+    Value *out = v_list(0);
+    out->items = calloc((size_t)(nb ? nb : 1), sizeof(Value *));
+    int unsure = 0;
+    fmpq_t last; fmpq_init(last); int have_last = 0;
+    for (slong i = 0; i < nb; i++) {
+        if (flags[i] != 1) {                                   /* an end of the piece exactly a root (sin(x) at 0)? */
+            int found = 0;
+            for (int w = 0; w < 2 && !found; w++) {
+                fmpq_t q; fmpq_init(q);
+                arf_get_fmpq(q, w ? &blocks[i].b : &blocks[i].a);
+                if (have_last && fmpq_equal(q, last)) { fmpq_clear(q); found = 1; break; }
+                Value *qv = v_num(); ca_set_fmpq(qv->num, q, am_ca);
+                Check k = {e, qv, x};
+                Value *r;
+                if (am_try(check_at, &k, &r) && am_zero_test(r, NULL, 0) == 1) {
+                    Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(x); eq->items[1] = qv;
+                    out->items[out->n++] = eq;
+                    fmpq_set(last, q); have_last = 1; found = 1;
+                }
+                fmpq_clear(q);
+            }
+            if (!found) unsure++;
+            continue;
+        }
+        arf_interval_t r; arf_interval_init(r);
+        arb_calc_refine_root_bisect(r, real_fn, &F, blocks + i, (slong)(digits * 3.33) + 20, prec);
+        arb_t m; arb_init(m);
+        arf_interval_get_arb(m, r, prec);
+        char *s = arb_get_str(m, digits, ARB_STR_NO_RADIUS);
+        Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(x); eq->items[1] = v_str(s);
+        out->items[out->n++] = eq;
+        flint_free(s); arb_clear(m); arf_interval_clear(r);
+    }
+    fmpq_clear(last);
+    _arf_interval_vec_clear(blocks, nb); flint_free(flags);
+    arf_interval_clear(block); acb_clear(A); acb_clear(B);
+    if (unsure) {
+        am_status(S_NUMERIC, "the roots listed are certified (a sign change, the derivative nonzero: exactly one each, digits by bisection); %d piece(s) of the interval could not be decided (a double root, roots too close together, or a singularity)", unsure);
+        am_fact("undecided_pieces", "%d", unsure);
+    } else am_status(S_CERTIFIED, "every real root in the interval isolated (or found exactly at a dividing point) by ball arithmetic (Arb): a sign change and a nonzero derivative show exactly one in each piece; digits by bisection");
+    return out;
+}
+Value *am_nsolve(Value **a, int n) { return b_nsolve_impl(a, n); }

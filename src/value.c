@@ -57,6 +57,7 @@ Value *v_copy(const Value *a) {
     case V_LIST: case V_EQ:
         v = v_list(a->n); v->kind = a->kind;
         for (int i = 0; i < a->n; i++) v->items[i] = v_copy(a->items[i]);
+        if (a->kind == V_EQ && a->str) v->str = strdup(a->str);   /* a relation: <, <=, >, >= */
         return v;
     case V_BOOL: return v_bool(a->truth);
     case V_STR: return v_str(a->str);
@@ -446,7 +447,7 @@ static void put_value(Str *b, const Value *v) {
         for (int i = 0; i < v->n; i++) { if (i) sput(b, ", "); put_value(b, v->items[i]); }
         sput(b, "]");
         break;
-    case V_EQ: put_value(b, v->items[0]); sput(b, " = "); put_value(b, v->items[1]); break;
+    case V_EQ: put_value(b, v->items[0]); sput(b, " "); sput(b, v->str ? v->str : "="); sput(b, " "); put_value(b, v->items[1]); break;
     case V_BOOL: sput(b, v->truth > 0 ? "true" : v->truth == 0 ? "false" : "unknown"); break;
     case V_STR: sput(b, v->str); break;
     }
