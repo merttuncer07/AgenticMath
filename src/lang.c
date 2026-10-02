@@ -765,6 +765,15 @@ static char *run_statement(const char *line, Node *volatile *tree) {
     return text;
 }
 
+/* the named values keep their variables; everything else may be reused (not while loading the library) */
+static void collect(void) {
+    if (library_loading) return;
+    Value **keep = malloc((size_t)(nglobals ? nglobals : 1) * sizeof *keep);
+    for (int i = 0; i < nglobals; i++) keep[i] = globals[i].v;
+    am_collect_vars(keep, nglobals);
+    free(keep);
+}
+
 char *am_run(const char *line, int *failed) {
     *failed = 0;
     am_show = 0; am_lean = 0;
@@ -777,14 +786,15 @@ char *am_run(const char *line, int *failed) {
         frame = NULL; depth = 0;
         char *out = am_render(line, NULL, err_msg);
         am_pool_release();
+        collect();
         return out;
     }
     char *text = run_statement(line, &tree);
     free_tree(tree);
-    if (!text) { am_pool_release(); return NULL; }
-    char *out = am_render(line, text, NULL);
+    char *out = text ? am_render(line, text, NULL) : NULL;
     free(text);
     am_pool_release();
+    collect();
     return out;
 }
 

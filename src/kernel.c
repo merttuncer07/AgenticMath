@@ -26,18 +26,57 @@ void am_init(void) {
     am_load_library();
 }
 
+static int is_free[AM_MAXVARS];                                /* a slot given back by am_collect_vars */
+
 static int find(const char *name, size_t len) {
-    for (int i = 0; i < am_nvars; i++) if (strlen(am_varnames[i]) == len && !strncmp(am_varnames[i], name, len)) return i;
+    for (int i = 0; i < am_nvars; i++) if (!is_free[i] && strlen(am_varnames[i]) == len && !strncmp(am_varnames[i], name, len)) return i;
     return -1;
 }
 
 static int add(const char *name, size_t len) {
-    if (am_nvars == AM_MAXVARS) am_fail("more than %d variables and function terms in use", AM_MAXVARS);
+    int k = -1;
+    for (int i = 0; i < am_nvars && k < 0; i++) if (is_free[i]) k = i;
+    if (k < 0) {
+        if (am_nvars == AM_MAXVARS) am_fail("more than %d variables and function terms in use in one statement", AM_MAXVARS);
+        k = am_nvars++;
+    }
     char *s = malloc(len + 1); memcpy(s, name, len); s[len] = 0;
-    am_varnames[am_nvars] = s;
-    memset(&am_vars[am_nvars], 0, sizeof am_vars[0]);
-    am_vars[am_nvars].name = s;
-    return am_nvars++;
+    am_varnames[k] = s;
+    memset(&am_vars[k], 0, sizeof am_vars[0]);
+    am_vars[k].name = s;
+    is_free[k] = 0;
+    return k;
+}
+
+/* mark the generators a value uses, and through function terms the ones their arguments use */
+static void mark(const Value *v, int *live) {
+    if (!v) return;
+    if (v->kind == V_LIST || v->kind == V_EQ) { for (int i = 0; i < v->n; i++) mark(v->items[i], live); return; }
+    if (v->kind != V_RF) return;
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++)
+        if (used[i] && !live[i]) {
+            live[i] = 1;
+            for (int j = 0; j < am_vars[i].nargs; j++) mark(am_vars[i].args[j], live);
+        }
+}
+
+/* after a statement: give back the slots of variables and function terms that no named value uses */
+void am_collect_vars(Value **keep, int nkeep) {
+    int live[AM_MAXVARS] = {0};
+    for (int i = 0; i < nkeep; i++) mark(keep[i], live);
+    for (int i = 0; i < am_nvars; i++) {
+        if (live[i] || is_free[i]) continue;
+        is_free[i] = 1;
+        static char unused[AM_MAXVARS][8];
+        snprintf(unused[i], sizeof unused[i], "_v%d", i);
+        free(am_vars[i].name);
+        free(am_vars[i].head);
+        free(am_vars[i].args);                                 /* the argument values themselves stay (kept) */
+        memset(&am_vars[i], 0, sizeof am_vars[0]);
+        am_varnames[i] = unused[i];
+    }
 }
 
 int am_var_index(const char *name, size_t len) {

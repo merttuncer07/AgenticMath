@@ -15,7 +15,7 @@ defined h(x, y) = x*y + 1
 7  [exact: exact arithmetic]
   diff(sin(u), x) := cos(u)*diff(u, x)
   diff(exp(u), x) := exp(u)*diff(u, x)
-sin(x)*exp(x) + cos(x)*exp(x)  [exact: exact arithmetic]
+sin(x)*exp(x) + exp(x)*cos(x)  [exact: exact arithmetic]
   fact(n) := n*fact(n - 1) if n > 0
   fact(n) := n*fact(n - 1) if n > 0
   fact(n) := n*fact(n - 1) if n > 0
