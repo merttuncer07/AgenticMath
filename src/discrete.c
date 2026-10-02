@@ -125,6 +125,51 @@ static Value *b_totient(Value **a, int n) {
     return v;
 }
 
+static Value *b_fibonacci(Value **a, int n) {
+    const char *fname = "fibonacci";
+    if (n != 1) am_fail("fibonacci(n)");
+    WHOLE(0, x)
+    if (!fmpz_fits_si(x) || fmpz_cmp_si(x, 10000000) > 0 || fmpz_cmp_si(x, -10000000) < 0) am_fail("fibonacci: |n| up to 10^7");
+    slong k = fmpz_get_si(x);
+    fmpz_t r; fmpz_init(r); fmpz_fib_ui(r, (ulong)(k < 0 ? -k : k));
+    if (k < 0 && !(k & 1)) fmpz_neg(r, r);                    /* F(-n) = (-1)^(n + 1) F(n) */
+    Value *v = num_z(r); fmpz_clear(r); fmpz_clear(x);
+    return v;
+}
+
+static Value *b_lucas(Value **a, int n) {
+    const char *fname = "lucas";
+    if (n != 1) am_fail("lucas(n)");
+    WHOLE(0, x)
+    if (fmpz_sgn(x) < 0 || fmpz_cmp_si(x, 10000000) > 0) am_fail("lucas: 0 <= n <= 10^7");
+    ulong k = fmpz_get_ui(x);
+    fmpz_t r, t; fmpz_init(r); fmpz_init(t);
+    if (k == 0) fmpz_set_ui(r, 2);
+    else { fmpz_fib_ui(r, k - 1); fmpz_fib_ui(t, k + 1); fmpz_add(r, r, t); }   /* L(n) = F(n - 1) + F(n + 1) */
+    Value *v = num_z(r); fmpz_clear(r); fmpz_clear(t); fmpz_clear(x);
+    return v;
+}
+
+static Value *b_bernoulli(Value **a, int n) {
+    const char *fname = "bernoulli";
+    if (n != 1) am_fail("bernoulli(n)");
+    WHOLE(0, x)
+    if (fmpz_sgn(x) < 0 || fmpz_cmp_si(x, 100000) > 0) am_fail("bernoulli: 0 <= n <= 10^5");
+    fmpq_t q; fmpq_init(q); arith_bernoulli_number(q, fmpz_get_ui(x));
+    Value *v = v_num(); ca_set_fmpq(v->num, q, am_ca); fmpq_clear(q); fmpz_clear(x);
+    return v;
+}
+
+static Value *b_partitions(Value **a, int n) {
+    const char *fname = "partitions";
+    if (n != 1) am_fail("partitions(n)");
+    WHOLE(0, x)
+    if (fmpz_sgn(x) < 0 || fmpz_cmp_si(x, 100000000) > 0) am_fail("partitions: 0 <= n <= 10^8");
+    fmpz_t r; fmpz_init(r); arith_number_of_partitions(r, fmpz_get_ui(x));
+    Value *v = num_z(r); fmpz_clear(r); fmpz_clear(x);
+    return v;
+}
+
 static Value *b_crt(Value **a, int n) {
     if (n != 2 || a[0]->kind != V_LIST || a[1]->kind != V_LIST || a[0]->n != a[1]->n || a[0]->n == 0) am_fail("crt([r1, r2, ...], [m1, m2, ...])");
     fmpz_t r, m, ri, mi, g, s, t; fmpz_init(r); fmpz_init_set_ui(m, 1); fmpz_init(ri); fmpz_init(mi); fmpz_init(g); fmpz_init(s); fmpz_init(t);
@@ -450,6 +495,30 @@ static Value *b_sum(Value **a, int n) {
         am_fact("method", "\"geometric\"");
         return v_div(v_mul(fa, v_sub(v_pow(ratio, cnt), one)), dr);
     }
+    {   /* c/k^s to infinity: a p-series, zeta(s) less its first terms; s <= 1 diverges */
+        slong sdeg = f->kind == V_RF ? fmpz_mpoly_degree_si(fmpz_mpoly_q_denref(f->rf), k, am_mp) - fmpz_mpoly_degree_si(fmpz_mpoly_q_numref(f->rf), k, am_mp) : 0;
+        fmpz_t A0; fmpz_init(A0);
+        if (infinite && sdeg >= 1 && sdeg <= 10000 && whole(lo, A0) && fmpz_sgn(A0) > 0 && fmpz_cmp_si(A0, 100000) <= 0) {
+            Value *ks = v_pow(am_gen(k), num_si(sdeg));
+            Value *c = v_mul(f, ks);
+            if (am_free_of(c, k)) {
+                if (sdeg == 1) {
+                    fmpz_clear(A0);
+                    am_status(S_PROVED, "c/k with c = %s nonzero: the harmonic series diverges", v_str_of(c));
+                    am_fact("converges", "false");
+                    return v_str("diverges");
+                }
+                Value *zarg = num_si(sdeg);
+                Value *zv = am_call("zeta", &zarg, 1);
+                for (slong j = 1; j < fmpz_get_si(A0); j++) zv = v_sub(zv, v_pow(num_si(j), num_si(-sdeg)));
+                fmpz_clear(A0);
+                am_status(S_PROVED, "c/k^%ld: a p-series, c*(zeta(%ld) less the terms before the lower limit)", (long)sdeg, (long)sdeg);
+                am_fact("method", "\"p-series\"");
+                return v_mul(c, zv);
+            }
+        }
+        fmpz_clear(A0);
+    }
     int hyper = 0;
     Value *z = gosper(f, k, ratio, &hyper);
     if (z) {
@@ -487,6 +556,10 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } DTAB
     {"divisors", b_divisors, "divisors(n)", "all positive divisors, in order"},
     {"nextprime", b_nextprime, "nextprime(n)", "the smallest prime greater than n (proved prime)"},
     {"totient", b_totient, "totient(n)", "Euler's totient"},
+    {"fibonacci", b_fibonacci, "fibonacci(n)", "the Fibonacci number F(n) (F(0) = 0, F(1) = 1; negative n too)"},
+    {"lucas", b_lucas, "lucas(n)", "the Lucas number L(n) (L(0) = 2, L(1) = 1)"},
+    {"bernoulli", b_bernoulli, "bernoulli(n)", "the Bernoulli number B(n) (B(1) = -1/2)"},
+    {"partitions", b_partitions, "partitions(n)", "the number of partitions of n"},
     {"crt", b_crt, "crt([r1, ...], [m1, ...])", "the Chinese remainder theorem: [x, M] with every solution x mod M, or [] when they contradict"},
     {"sum", b_sum, "sum(list) | sum(f, k, a, b)", "a sum: term by term for numeric bounds, closed forms for polynomial and geometric terms (b may be oo), checked"},
     {"product", b_product, "product(list)", "the product of the elements"},

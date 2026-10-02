@@ -32,6 +32,7 @@ static int eval_gen(acb_t out, int g, int x, const acb_t z, int analytic, slong 
         else if (!strcmp(h, "abs")) acb_real_abs(out, u, analytic, prec);
         else if (!strcmp(h, "gamma")) acb_gamma(out, u, prec);
         else if (!strcmp(h, "erf")) acb_hypgeom_erf(out, u, prec);
+        else if (!strcmp(h, "zeta")) acb_zeta(out, u, prec);
         else if (!strcmp(h, "atan") || !strcmp(h, "asin") || !strcmp(h, "acos")) {
             /* branch cuts: atan on the imaginary axis beyond +-i, asin and acos on the real axis beyond +-1 */
             if (analytic) {

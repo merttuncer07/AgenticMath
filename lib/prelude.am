@@ -26,3 +26,11 @@ asinh(u) := log(u + sqrt(u^2 + 1))
 acosh(u) := log(u + sqrt(u^2 - 1))
 atanh(u) := log((1 + u)/(1 - u))/2
 diff(erf(u), x) := 2*exp(-u^2)/sqrt(pi)*diff(u, x)
+
+# names other systems use
+arcsin(u) := asin(u)
+arccos(u) := acos(u)
+arctan(u) := atan(u)
+factorial(n) := n!
+log10(u) := log(u)/log(10)
+log2(u) := log(u)/log(2)

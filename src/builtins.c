@@ -8,8 +8,11 @@
 
 #include <flint/fmpz_factor.h>
 #include <flint/fmpz_poly.h>
+#include <flint/fmpq_poly.h>
+#include <flint/fmpz_poly_factor.h>
 #include <flint/fmpz_mpoly_factor.h>
 #include <flint/qqbar.h>
+#include <flint/arith.h>
 #include <flint/acb.h>
 #include <flint/ca_vec.h>
 
@@ -167,6 +170,20 @@ CAFN(gamma, ca_gamma)
 CAFN(erf, ca_erf)
 
 /* N(x, digits): a decimal with every digit guaranteed (ball arithmetic) */
+int am_eval_acb(acb_t out, Value *f, int x, const acb_t z, int analytic, slong prec);
+/* a term with no plain variable anywhere inside: zeta(3), log(2) */
+static int am_free_of_all(Value *g) {
+    if (g->kind != V_RF) return 1;
+    int u[AM_MAXVARS] = {0}; fmpz_mpoly_q_used_vars(u, g->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) {
+        if (!u[i]) continue;
+        if (!am_vars[i].kernel) return 0;
+        if (am_vars[i].numval) continue;
+        for (int j = 0; j < am_vars[i].nargs; j++) if (!am_free_of_all(am_vars[i].args[j])) return 0;
+    }
+    return 1;
+}
+
 static Value *b_N(Value **a, int n) {
     Value *m = map1(b_N, a, n); if (m) return m;
     need(n, 1, 2, "N");
@@ -183,7 +200,28 @@ static Value *b_N(Value **a, int n) {
     if (x->kind == V_RF) x = am_reevaluate(x);              /* sqrt(2) kept among variables, sin(1/2): numbers again */
     if (x->kind == V_RF) {
         fmpq_t q; fmpq_init(q);
-        if (!v_is_rational(x, q)) am_fail("N needs a number, not an expression with variables");
+        if (!v_is_rational(x, q)) {
+            int vs[AM_MAXVARS], k = used_vars(x, vs);
+            for (int i = 0; i < k; i++) if (!am_vars[vs[i]].kernel || !am_free_of_all(am_gen(vs[i]))) am_fail("N needs a number, not an expression with variables");
+            /* zeta(3), function terms of numbers: ball arithmetic, the precision raised until the digits are sure */
+            acb_t r, z0; acb_init(r); acb_init(z0);
+            int done = 0;
+            for (slong prec = (slong)(d * 3.33) + 30; prec < (slong)(d * 3.33) * 8 + 4000 && !done; prec *= 2)
+                if (am_eval_acb(r, x, -1, z0, 0, prec) && acb_rel_accuracy_bits(r) > (slong)(d * 3.33) + 4) done = 1;
+            if (!done) { acb_clear(r); acb_clear(z0); am_fail("N: could not reach %ld certified digits", (long)d); }
+            Str o = {0, 0, 0}; sput(&o, "");
+            char *re = arb_get_str(acb_realref(r), d, ARB_STR_NO_RADIUS);
+            sput(&o, re); flint_free(re);
+            if (!arb_is_zero(acb_imagref(r))) {
+                char *im = arb_get_str(acb_imagref(r), d, ARB_STR_NO_RADIUS);
+                sputf(&o, im[0] == '-' ? " - %s*I" : " + %s*I", im[0] == '-' ? im + 1 : im);
+                flint_free(im);
+            }
+            acb_clear(r); acb_clear(z0);
+            am_status(S_CERTIFIED, "digits guaranteed by ball arithmetic (Arb)");
+            Value *rv = v_str(o.s); free(o.s);
+            return rv;
+        }
         Value *t = v_num(); ca_set_fmpq(t->num, q, am_ca); fmpq_clear(q); x = t;
     }
     if (x->kind != V_NUM) am_fail("N needs a number");
@@ -877,6 +915,138 @@ static Value *b_solve(Value **a, int n) {
     return solve_system(eqs, ne, vars, nvar);
 }
 
+/* ---------------- partial fractions over Q ---------------- */
+
+static Value *qpoly_value(const fmpq_poly_t p, int x) {
+    Value *r = v_num(), *X = gen_value(x);
+    fmpq_t c; fmpq_init(c);
+    for (slong i = fmpq_poly_degree(p); i >= 0; i--) {
+        fmpq_poly_get_coeff_fmpq(c, p, i);
+        Value *cv = v_num(); ca_set_fmpq(cv->num, c, am_ca);
+        r = v_add(v_mul(r, X), cv);
+    }
+    fmpq_clear(c);
+    return r;
+}
+
+/* apart(f, x): the polynomial part plus c_j(x)/p(x)^j over the irreducible factors p of the denominator,
+   deg c_j < deg p; the sum is checked against f */
+static Value *b_apart(Value **a, int n) {
+    need(n, 1, 2, "apart");
+    Value *f = a[0];
+    int x = main_var(f, a, n, 1, "apart");
+    if (f->kind != V_RF) return f;
+    int vs[AM_MAXVARS], k = used_vars(f, vs);
+    for (int i = 0; i < k; i++) if (vs[i] != x) am_fail("apart: the coefficients must be numbers (a rational function of %s alone)", am_varnames[x]);
+    fmpz_poly_t N, D; fmpz_poly_init(N); fmpz_poly_init(D);
+    fmpz_mpoly_get_fmpz_poly(N, fmpz_mpoly_q_numref(f->rf), x, am_mp);
+    fmpz_mpoly_get_fmpz_poly(D, fmpz_mpoly_q_denref(f->rf), x, am_mp);
+    fmpq_poly_t num, den, q, r, part, rest, A, B, g, s, t, pe;
+    fmpq_poly_init(num); fmpq_poly_init(den); fmpq_poly_init(q); fmpq_poly_init(r); fmpq_poly_init(part);
+    fmpq_poly_init(rest); fmpq_poly_init(A); fmpq_poly_init(B); fmpq_poly_init(g); fmpq_poly_init(s); fmpq_poly_init(t); fmpq_poly_init(pe);
+    fmpq_poly_set_fmpz_poly(num, N); fmpq_poly_set_fmpz_poly(den, D);
+    fmpq_poly_divrem(q, r, num, den);
+    Value **terms = NULL; int nt = 0;
+    #define ADD_TERM(v) do { terms = realloc(terms, (size_t)(nt + 1) * sizeof *terms); terms[nt++] = (v); } while (0)
+    char **texts = NULL;
+    if (!fmpq_poly_is_zero(q)) { ADD_TERM(qpoly_value(q, x)); texts = realloc(texts, sizeof *texts); texts[0] = v_str_of(terms[0]); }
+    fmpz_poly_factor_t F; fmpz_poly_factor_init(F); fmpz_poly_factor(F, D);
+    /* den = c prod p_i^e_i; r/den = sum A_i/p_i^e_i with A_i = r (den/p_i^e_i)^(-1) mod p_i^e_i */
+    for (slong i = 0; i < F->num; i++) {
+        fmpq_poly_t P, c; fmpq_poly_init(P); fmpq_poly_init(c);
+        fmpq_poly_set_fmpz_poly(P, F->p + i);
+        slong e = F->exp[i];
+        fmpq_poly_pow(pe, P, (ulong)e);
+        fmpq_poly_div(rest, den, pe);                          /* exact */
+        fmpq_poly_xgcd(g, s, t, rest, pe);                     /* s rest + t pe = 1 */
+        fmpq_poly_mul(A, r, s);
+        fmpq_poly_rem(A, A, pe);
+        for (slong m = 0; m < e; m++) {                        /* A = sum c_m P^m: A/P^e = sum c_m/P^(e - m) */
+            fmpq_poly_divrem(B, c, A, P);
+            fmpq_poly_swap(A, B);
+            if (fmpq_poly_is_zero(c)) continue;
+            Value *ev = v_num(); ca_set_si(ev->num, e - m, am_ca);
+            ADD_TERM(v_div(qpoly_value(c, x), v_pow(qpoly_value(P, x), ev)));
+            {   /* the text a/(b*P^j), P kept factored */
+                fmpz_poly_t an; fmpz_t b; fmpz_poly_init(an); fmpz_init(b);
+                fmpq_poly_get_numerator(an, c); fmpz_set(b, fmpq_poly_denref(c));
+                fmpq_poly_t aq; fmpq_poly_init(aq); fmpq_poly_set_fmpz_poly(aq, an);
+                char *as = v_str_of(qpoly_value(aq, x)), *ps = v_str_of(qpoly_value(P, x));
+                int psum = strchr(ps, ' ') != NULL, asum = strchr(as + 1, ' ') != NULL;
+                Str tt = {0, 0, 0}; sput(&tt, "");
+                if (asum) sputf(&tt, "(%s)", as); else sput(&tt, as);
+                Str dd = {0, 0, 0}; sput(&dd, "");
+                if (psum && (e - m > 1 || !fmpz_is_one(b))) sputf(&dd, "(%s)", ps); else sput(&dd, ps);
+                if (e - m > 1) sputf(&dd, "^%ld", (long)(e - m));
+                if (!fmpz_is_one(b)) { char *bs = fmpz_get_str(NULL, 10, b); sputf(&tt, "/(%s*%s)", bs, dd.s); flint_free(bs); }
+                else if (psum && e - m == 1) sputf(&tt, "/(%s)", dd.s);
+                else sputf(&tt, "/%s", dd.s);
+                texts = realloc(texts, (size_t)nt * sizeof *texts); texts[nt - 1] = tt.s;
+                free(dd.s); free(as); free(ps);
+                fmpq_poly_clear(aq); fmpz_poly_clear(an); fmpz_clear(b);
+            }
+        }
+        fmpq_poly_clear(P); fmpq_poly_clear(c);
+    }
+    fmpz_poly_factor_clear(F);
+    #undef ADD_TERM
+    fmpq_poly_clear(num); fmpq_poly_clear(den); fmpq_poly_clear(q); fmpq_poly_clear(r); fmpq_poly_clear(part);
+    fmpq_poly_clear(rest); fmpq_poly_clear(A); fmpq_poly_clear(B); fmpq_poly_clear(g); fmpq_poly_clear(s); fmpq_poly_clear(t); fmpq_poly_clear(pe);
+    fmpz_poly_clear(N); fmpz_poly_clear(D);
+    Value *sum = v_num();
+    Str out = {0, 0, 0}, js = {0, 0, 0}; sput(&out, ""); sput(&js, "[");
+    for (int i = 0; i < nt; i++) {
+        sum = v_add(sum, terms[i]);
+        char *ts = texts[i];
+        if (i) sput(&out, ts[0] == '-' ? " - " : " + ");
+        sput(&out, i && ts[0] == '-' ? ts + 1 : ts);
+        char *q2 = am_json_str(ts);
+        sputf(&js, "%s%s", i ? ", " : "", q2);
+        free(q2); free(ts);
+    }
+    sput(&js, "]");
+    free(terms); free(texts);
+    Value *d = v_sub(sum, f);
+    if (!((d->kind == V_NUM && ca_check_is_zero(d->num, am_ca) == T_TRUE) || (d->kind == V_RF && fmpz_mpoly_q_is_zero(d->rf, am_mp))))
+        am_fail("internal: the partial fractions do not add up");
+    am_status(S_PROVED, "partial fractions over the irreducible factors of the denominator over Q; the terms add back to the input exactly (the answer is a form to read: as a value it is the input itself)");
+    am_fact("terms", "%s", js.s);
+    free(js.s);
+    Value *res = v_str(out.s);
+    free(out.s);
+    return res;
+}
+
+/* zeta(n): exact for even n > 0 (Bernoulli numbers and pi) and n <= 0; otherwise a term with certified digits */
+static Value *b_zeta(Value **a, int n) {
+    need(n, 1, 1, "zeta");
+    fmpz_t z; fmpz_init(z);
+    if (a[0]->kind == V_NUM && get_fmpz(a[0], z) && fmpz_cmp_si(z, 10000) <= 0 && fmpz_cmp_si(z, -10000) >= 0) {
+        slong k = fmpz_get_si(z);
+        fmpz_clear(z);
+        if (k == 1) am_fail("zeta(1): the pole of zeta (the harmonic series diverges)");
+        fmpq_t b; fmpq_init(b);
+        Value *r = NULL;
+        if (k <= 0) {                                         /* zeta(-m) = (-1)^m B(m + 1)/(m + 1) */
+            slong m = -k;
+            arith_bernoulli_number(b, (ulong)(m + 1));
+            { fmpz_t d; fmpz_init_set_si(d, m + 1); fmpq_div_fmpz(b, b, d); fmpz_clear(d); }
+            if (m & 1) fmpq_neg(b, b);
+            r = v_num(); ca_set_fmpq(r->num, b, am_ca);
+        } else if (!(k & 1)) {                                /* zeta(2m) = (-1)^(m + 1) B(2m) (2 pi)^(2m) / (2 (2m)!) */
+            arith_bernoulli_number(b, (ulong)k);
+            fmpz_t f; fmpz_init(f); fmpz_fac_ui(f, (ulong)k); fmpz_mul_ui(f, f, 2);
+            fmpq_div_fmpz(b, b, f); fmpz_clear(f);
+            if (!((k / 2) & 1)) fmpq_neg(b, b);
+            r = v_num(); ca_pi(r->num, am_ca); ca_mul_ui(r->num, r->num, 2, am_ca); ca_pow_ui(r->num, r->num, (ulong)k, am_ca);
+            ca_mul_fmpq(r->num, r->num, b, am_ca);
+        }
+        fmpq_clear(b);
+        if (r) return r;
+    } else fmpz_clear(z);
+    return am_kernel_value("zeta", a, 1);
+}
+
 static Value *b_binomial(Value **a, int n) {
     need(n, 2, 2, "binomial");
     fmpz_t N, K, r; fmpz_init(N); fmpz_init(K); fmpz_init(r);
@@ -923,6 +1093,9 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"coeff", b_coeff, "coeff(p, x, k)", "the coefficient of x^k in the polynomial p"},
     {"degree", b_degree, "degree(p[, x])", "total degree, or the degree in x"},
     {"expand", b_expand, "expand(e)", "the expanded form (every polynomial result is already expanded)"},
+    {"apart", b_apart, "apart(f[, x])", "partial fractions over Q: the polynomial part plus c(x)/p(x)^j over the irreducible factors p of the denominator (text to read; the terms are in the facts)"},
+    {"partfrac", b_apart, "partfrac(f[, x])", "the same as apart"},
+    {"together", b_simplify, "together(e)", "one fraction in lowest terms (every rational result already is one)"},
     {"simplify", b_simplify, "simplify(e)", "a shorter equal form: lowest terms, exponentials combined, trigonometric identities (sin^2 + cos^2 = 1, multiple angles) and sqrt(u)^2 = u applied when they shorten it"},
     {"numer", b_numer, "numer(e)", "numerator of a rational function"},
     {"denom", b_denom, "denom(e)", "denominator of a rational function"},
@@ -934,6 +1107,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"sin", b_sin, "sin(x)", "sine"}, {"cos", b_cos, "cos(x)", "cosine"}, {"tan", b_tan, "tan(x)", "tangent"},
     {"atan", b_atan, "atan(x)", "arctangent"}, {"asin", b_asin, "asin(x)", "arcsine"}, {"acos", b_acos, "acos(x)", "arccosine"},
     {"erf", b_erf, "erf(x)", "the error function"},
+    {"zeta", b_zeta, "zeta(s)", "the Riemann zeta function: exact for even s > 0 and s <= 0, certified digits by N otherwise"},
     {"abs", b_abs, "abs(x)", "absolute value of a number"}, {"re", b_re, "re(x)", "real part"}, {"im", b_im, "im(x)", "imaginary part"},
     {"conj", b_conj, "conj(x)", "complex conjugate"}, {"floor", b_floor, "floor(x)", "largest integer <= x"},
     {"ceil", b_ceil, "ceil(x)", "smallest integer >= x"}, {"gamma", b_gamma, "gamma(x)", "the gamma function"},

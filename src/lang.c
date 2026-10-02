@@ -512,13 +512,19 @@ static int match(Node *p, Value *v, Frame *f) {
 }
 
 /* a call to a name with no rules and no built-in: said in the facts, so a misspelled name is noticed */
-static void note_undefined(const char *name) {
+static void note_undefined(const char *name, Value **args, int n) {
     if (library_loading) return;
     char *js = am_json_str(name);
     am_fact("undefined_function", "%s", js);
     free(js);
-    const char *s = am_suggest(name);
+    const char *s = strlen(name) >= 3 ? am_suggest(name) : NULL;
     if (s) { js = am_json_str(s); am_fact("did_you_mean", "%s", js); free(js); }
+    int numbers = n > 0;                                       /* fibonacci(20): a value was wanted, and none was computed */
+    for (int i = 0; i < n; i++) if (args[i]->kind != V_NUM) numbers = 0;
+    if (numbers && !in_condition) {
+        if (s) am_status(S_UNKNOWN, "%s is not a defined function (did you mean %s?); %s(...) is kept as a symbol", name, s, name);
+        else am_status(S_UNKNOWN, "%s is not a defined function; %s(...) is kept as a symbol (help() lists the functions; f(x) := ... defines one)", name, name);
+    }
 }
 
 Value *am_call(const char *name, Value **args, int n) {
@@ -563,7 +569,7 @@ Value *am_call(const char *name, Value **args, int n) {
         if (!library_loading && strcmp(name, "antiderivative")) { char *js = am_json_str(name); am_fact("unevaluated", "%s", js); free(js); }
         return am_kernel_value(name, args, n);
     }
-    note_undefined(name);
+    note_undefined(name, args, n);
     return am_kernel_value(name, args, n);                   /* an undefined function stays symbolic: f(x) */
 }
 
