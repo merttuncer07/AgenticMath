@@ -21,13 +21,14 @@ src/%.o: src/%.c src/am.h src/msolve_bridge.h src/json.h
 # the engines, built once into deps/ as static libraries, for any x86-64 processor (msolve's configure would otherwise
 # compile for the building machine's vector extensions, and the program would stop with an illegal instruction elsewhere)
 FLINT_TAG = v3.3.1
+MSOLVE_FLAGS = SIMD_FLAGS="-msse2 -msse3 -mssse3 -msse4.1 -msse4.2" CPUEXT_FLAGS=
 MSOLVE_TAG = v0.9.0
 deps:
 	mkdir -p build-deps
 	cd build-deps && [ -d flint ] || git clone -q --depth 1 --branch $(FLINT_TAG) https://github.com/flintlib/flint.git
 	cd build-deps/flint && ./bootstrap.sh && ./configure --prefix=$(DEPS) --disable-shared --enable-static && $(MAKE) && $(MAKE) install
 	cd build-deps && [ -d msolve ] || git clone -q --depth 1 --branch $(MSOLVE_TAG) https://github.com/algebraic-solving/msolve.git
-	cd build-deps/msolve && ./autogen.sh && CPPFLAGS=-I$(DEPS)/include LDFLAGS=-L$(DEPS)/lib ./configure --prefix=$(DEPS) --disable-shared --enable-static && $(MAKE) SIMD_FLAGS= CPUEXT_FLAGS= && $(MAKE) SIMD_FLAGS= CPUEXT_FLAGS= install
+	cd build-deps/msolve && ./autogen.sh && CPPFLAGS=-I$(DEPS)/include LDFLAGS=-L$(DEPS)/lib ./configure --prefix=$(DEPS) --disable-shared --enable-static ax_cv_have_avx_os_support_ext=no ax_cv_have_avx512_os_support_ext=no && $(MAKE) $(MSOLVE_FLAGS) && $(MAKE) $(MSOLVE_FLAGS) install
 	cd build-deps/msolve && $(CC) -O2 -c -Dmain=msolve_main -DVERSION='"$(MSOLVE_TAG)"' -I$(DEPS)/include -I. -Isrc src/msolve/main.c -o $(DEPS)/lib/msolve_main.o
 
 test: amath
