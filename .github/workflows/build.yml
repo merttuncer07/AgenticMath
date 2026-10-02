@@ -11,7 +11,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: deps
-          key: deps-${{ runner.os }}-${{ hashFiles('Makefile') }}
+          key: deps-${{ runner.os }}-flint-v3.3.1-msolve-v0.9.0
       - name: engines (FLINT, msolve)
         run: test -f deps/lib/libflint.a || make deps
       - name: build

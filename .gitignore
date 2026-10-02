@@ -1,5 +1,5 @@
 amath
 src/*.o
-deps/
+deps
 build-deps/
 src/libtext.c
