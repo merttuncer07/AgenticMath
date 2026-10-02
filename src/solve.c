@@ -28,6 +28,7 @@ static Value *from_mpoly(const fmpz_mpoly_t p) {
     return am_reevaluate(r);
 }
 
+int am_solve_noverify;                  /* the caller checks the candidates itself (dsolve: against the equation) */
 static int real_only;                  /* abs was inverted: the solutions are the real ones */
 
 /* the integer parameters brought in by periodic inverses */
@@ -324,7 +325,7 @@ Value *am_solve1(Value *e, int x) {
     char reals[4096]; size_t rl = 0; int nreal = 0, realknown = 1;
     rl += (size_t)snprintf(reals + rl, sizeof reals - rl, "[");
     for (int i = 0; i < c.n; i++) {
-        int v = verify(e, x, c.v[i]);
+        int v = am_solve_noverify ? 1 : verify(e, x, c.v[i]);
         if (v == 0) { dropped++; continue; }
         if (v == -1) worst = -1; else if (v == 2 && worst == 1) worst = 2;
         Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(x); eq->items[1] = c.v[i];

@@ -68,13 +68,110 @@ static Value *to_prime_form(Value *E, const char *y, int x) {
 
 /* the solution y(x) substituted for y, y', ...: E must vanish */
 static int check(Value *E, Value *sol, int ord, const char *y, int x) {
-    Value *val[AM_MAXVARS];
-    for (int i = 0; i < am_nvars; i++) val[i] = am_gen(i);
+    Value *eqs = v_list(ord + 1);                             /* subs reaches inside function terms: exp(y) too */
     Value *d = sol;
-    for (int k = 0; k <= ord; k++) { val[deriv_var(y, k)] = d; d = D(d, x); }
-    Value *r = am_reevaluate(am_subs_rf(E, val));
+    for (int k = 0; k <= ord; k++) {
+        Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(deriv_var(y, k)); eq->items[1] = d;
+        eqs->items[k] = eq;
+        d = D(d, x);
+    }
+    Value *sa[2] = {E, eqs};
+    Value *r = am_reevaluate(call("subs", sa, 2));
     int z = am_zero_test(r, NULL, 0);
     return z;
+}
+
+/* y' = g(x) h(y): integral of dy/h(y) = integral of g(x) dx + C1, solved for y when solve can, checked by substitution */
+typedef struct { Value *R; int g; Value *v; } AtArg;
+static Value *at_point(void *p) { AtArg *t = p; return am_normal_form(am_reevaluate(subs_gen(t->R, t->g, t->v))); }
+typedef struct { Value *e; int y; } SolveArg;
+extern int am_solve_noverify;
+static Value *solve_try(void *p) { SolveArg *t = p; am_solve_noverify = 1; Value *r = am_solve1(t->e, t->y); am_solve_noverify = 0; return r; }
+
+static Value *separable(Value *E, const char *y, int x, Value *conds) {
+    int Y = deriv_var(y, 0), Yp = deriv_var(y, 1);
+    Value *c1 = D(E, Yp);
+    if (uses(c1, Yp) || is_zero_val(c1)) return NULL;
+    Value *R = am_normal_form(v_neg(v_div(subs_gen(E, Yp, num_si(0)), c1)));     /* y' = R(x, y) */
+    if (!uses(R, Y)) return NULL;
+    Value *h = NULL;
+    for (int t = 1; t <= 5 && !h; t++) {                     /* h(y) = R(x0, y) at a point where it is defined and not 0 */
+        AtArg aa = {R, x, num_si(t)};
+        Value *hv;
+        if (am_try(at_point, &aa, &hv) && !is_zero_val(hv) && uses(hv, Y)) h = hv;
+    }
+    if (!h) return NULL;
+    Value *g = am_normal_form(v_div(R, h));
+    if (uses(g, Y)) return NULL;                              /* not separable */
+    Value *ia[2] = {v_div(num_si(1), h), am_gen(Y)}, *ga[2] = {g, am_gen(x)};
+    am_fact_mute++;
+    Value *H = call("integrate", ia, 2), *G = call("integrate", ga, 2);
+    am_fact_mute--;
+    char *hs = v_str_of(H), *gs = v_str_of(G);
+    int unev = strstr(hs, "integrate(") || strstr(gs, "integrate(");
+    free(hs); free(gs);
+    if (unev) am_fail("dsolve: a separable equation, but the integral of 1/h(%s) or of g(%s) was not found", y, am_varnames[x]);
+    Value *C = am_gen(am_var_index("C1", 2));
+    int ncond = 0;
+    if (conds) {                                              /* y(x0) = v0 fixes C1 */
+        if (conds->kind != V_LIST || conds->n != 1) am_fail("dsolve: a first-order equation takes one condition, [y(x0) = v0]");
+        Value *c = conds->items[0];
+        int cg = c->kind == V_EQ ? am_gen_of(c->items[0]) : -1;
+        if (cg < 0 || !am_vars[cg].head || strcmp(am_vars[cg].head, y) || am_vars[cg].nargs != 1) am_fail("dsolve: write the condition as %s(x0) = value", y);
+        Value *x0 = am_vars[cg].args[0], *v0 = c->items[1];
+        C = am_reevaluate(v_sub(subs_gen(H, Y, v0), subs_gen(G, x, x0)));
+        ncond = 1;
+        (void)x0;
+    }
+    Value *implicit = v_sub(v_sub(H, G), C);
+    am_fact("separable", "true");
+    {   /* the constant solutions h(y) = 0 */
+        SolveArg sa = {h, Y};
+        Value *cs;
+        int mute = am_fact_mute; am_fact_mute = 1;
+        if (am_try(solve_try, &sa, &cs) && cs->kind == V_LIST && cs->n) { char *t = v_str_of(cs); char *js = am_json_str(t); am_fact("constant_solutions", "%s", js); free(js); free(t); }
+        am_fact_mute = mute;
+    }
+    SolveArg sa = {implicit, Y};
+    Value *sols;
+    int mute = am_fact_mute; am_fact_mute = 1;
+    int solved = am_try(solve_try, &sa, &sols) && sols->kind == V_LIST;
+    am_solve_noverify = 0;
+    am_fact_mute = mute;
+    am_status_clear();
+    Value *keep = v_list(0);
+    keep->items = calloc((size_t)(solved && sols->n ? sols->n : 1), sizeof(Value *));
+    int worst = 1;
+    if (solved) for (int i = 0; i < sols->n; i++) {
+        Value *cand = sols->items[i]->items[1];
+        for (int j = 1; j <= 16; j++) {                       /* periodic branches: C1 takes them in */
+            char nm[8]; snprintf(nm, sizeof nm, "n%d", j);
+            for (int k = 0; k < am_nvars; k++) if (!am_vars[k].kernel && !strcmp(am_varnames[k], nm)) cand = am_reevaluate(subs_gen(cand, k, num_si(0)));
+        }
+        int z = check(E, cand, 1, y, x);
+        if (z == 0) continue;
+        if (ncond) {
+            Value *c = conds->items[0];
+            int cg = am_gen_of(c->items[0]);
+            Value *d = v_sub(subs_gen(cand, x, am_vars[cg].args[0]), c->items[1]);
+            if (am_zero_test(d, NULL, 0) == 0) continue;
+        }
+        if (z != 1) worst = z == 2 && worst == 1 ? 2 : (z == -1 ? -1 : worst);
+        Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(Y); eq->items[1] = cand;
+        keep->items[keep->n++] = eq;
+    }
+    if (keep->n) {
+        const char *what = ncond ? "the condition fixes C1" : "C1 is the constant of the separated integration";
+        if (worst == 1) am_status(S_PROVED, "separable: the integral of dy/h(y) equals the integral of g(x) dx plus C1, solved for %s; put back into the equation: it holds exactly; %s", y, what);
+        else if (worst == 2) am_status(S_PROBABLE, "separable; solved for %s; put back into the equation: it holds at random points; %s", y, what);
+        else am_status(S_UNKNOWN, "separable; solved for %s; the check by substitution could not be decided", y);
+        return keep->n == 1 ? keep->items[0] : keep;
+    }
+    /* implicit: H(y) = G(x) + C1 */
+    am_status(S_PROVED, "separable: the solution in implicit form, the integral of dy/h(y) equals the integral of g(x) dx plus C1 (not solved for %s)", y);
+    am_fact("implicit", "true");
+    Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = H; eq->items[1] = v_add(G, C);
+    return eq;
 }
 
 Value *b_dsolve(Value **a, int n) {
@@ -95,14 +192,15 @@ Value *b_dsolve(Value **a, int n) {
     if (ord < 1) am_fail("dsolve: no derivative of %s in the equation", y);
     /* linear: E = sum a_k(x) y^(k) + r(x) */
     Value *coef[MAXORD + 1], *r = E;
-    for (int k = 0; k <= ord; k++) r = subs_gen(r, g[k], num_si(0));
     int linear = 1;
     for (int k = 0; k <= ord; k++) {
         Value *dk[2] = {E, am_gen(g[k])};
         coef[k] = call("diff", dk, 2);
         for (int j = 0; j <= ord; j++) if (uses(coef[k], g[j])) linear = 0;
     }
-    if (!linear) am_fail("dsolve: only linear equations are solved so far (the equation is not linear in %s and its derivatives)", y);
+    if (!linear && ord == 1) { Value *r = separable(E, y, x, n == 4 ? a[3] : NULL); if (r) return r; }
+    if (!linear) am_fail("dsolve: only linear and separable first-order equations are solved so far (the equation is not linear in %s and its derivatives)", y);
+    for (int k = 0; k <= ord; k++) r = subs_gen(r, g[k], num_si(0));
     am_fact("order", "%d", ord);
     am_fact("linear", "true");
     int constcoef = 1;

@@ -13,6 +13,7 @@
  * rational function in x whose coefficients are algebraic numbers, it is evaluated exactly at more points than its
  * degree, which proves it is 0. */
 #include "am.h"
+#include <flint/fmpz_mpoly_factor.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -480,6 +481,27 @@ static Value *integrate_any0(Value *f, int x, int depth) {
     if (f->kind != V_RF) am_fail("integrate needs an expression");
     f = lift_exp(tan_to_sincos(f));
     if (f->kind == V_NUM) return v_mul(f, am_gen(x));
+    {   /* factors of the denominator free of x (cos(1), a) come out in front */
+        const fmpz_mpoly_struct *Dn = fmpz_mpoly_q_denref(f->rf);
+        int used[AM_MAXVARS] = {0}, other = 0;
+        fmpz_mpoly_used_vars(used, Dn, am_mp);
+        for (int i = 0; i < am_nvars; i++) if (used[i] && i != x && am_free_of(am_gen(i), x)) other = 1;
+        if (other && !fmpz_mpoly_is_fmpz(Dn, am_mp)) {
+            fmpz_mpoly_factor_t F; fmpz_mpoly_factor_init(F, am_mp);
+            if (fmpz_mpoly_factor(F, Dn, am_mp)) {
+                Value *cst = v_num(); ca_one(cst->num, am_ca);
+                for (slong i = 0; i < F->num; i++) {
+                    Value *pv = v_rf(); fmpz_mpoly_set(fmpz_mpoly_q_numref(pv->rf), F->poly + i, am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(pv->rf), am_mp);
+                    if (!am_free_of(pv, x)) continue;
+                    Value *ev = v_num(); ca_set_fmpz(ev->num, F->exp + i, am_ca);
+                    cst = v_mul(cst, v_pow(pv, ev));
+                }
+                fmpz_mpoly_factor_clear(F, am_mp);
+                if (!(cst->kind == V_NUM && ca_check_is_one(cst->num, am_ca) == T_TRUE))
+                    return v_div(integrate_any0(v_mul(f, cst), x, depth + 1), cst);
+            } else fmpz_mpoly_factor_clear(F, am_mp);
+        }
+    }
     fmpq_poly_t n, d; fmpq_poly_init(n); fmpq_poly_init(d);
     if (as_rational(f, x, n, d)) { Value *r = integrate_rational(n, d, x); fmpq_poly_clear(n); fmpq_poly_clear(d); return r; }
     fmpq_poly_clear(n); fmpq_poly_clear(d);
