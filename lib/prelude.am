@@ -1,0 +1,16 @@
+# The prelude: rules every statement can use. Written in the language itself; the C core only knows arithmetic,
+# the engines, and how to apply rules.
+
+# derivatives of the elementary functions; diff applies the chain rule through them
+diff(sin(u), x) := cos(u)*diff(u, x)
+diff(cos(u), x) := -sin(u)*diff(u, x)
+diff(tan(u), x) := (1 + tan(u)^2)*diff(u, x)
+diff(exp(u), x) := exp(u)*diff(u, x)
+diff(log(u), x) := diff(u, x)/u
+diff(sqrt(u), x) := diff(u, x)/(2*sqrt(u))
+diff(atan(u), x) := diff(u, x)/(1 + u^2)
+diff(asin(u), x) := diff(u, x)/sqrt(1 - u^2)
+diff(acos(u), x) := -diff(u, x)/sqrt(1 - u^2)
+
+# simplifications that hold for every complex argument
+exp(log(u)) := u

@@ -3,11 +3,17 @@ DEPS ?= $(CURDIR)/deps
 CFLAGS ?= -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 CPPFLAGS += -I$(DEPS)/include
 LDLIBS = $(DEPS)/lib/msolve_main.o -L$(DEPS)/lib -lmsolve -lneogb -lflint -lmpfr -lgmp -lgomp -lm -lpthread
-SRC = src/value.c src/account.c src/lang.c src/builtins.c src/msolve.c src/main.c
+SRC = src/value.c src/kernel.c src/account.c src/lang.c src/builtins.c src/msolve.c src/libtext.c src/main.c
 OBJ = $(SRC:.c=.o)
 
 amath: $(OBJ)
 	$(CC) $(CFLAGS) -static -s -Wl,--gc-sections -o $@ $(OBJ) $(LDLIBS)
+
+# the library, written in the language, compiled into the program
+src/libtext.c: $(wildcard lib/*.am) Makefile
+	@{ echo '/* generated from the files in lib/ by the Makefile; do not edit */'; \
+	  echo 'const char *am_lib_names[] = {'; for f in lib/*.am; do echo "  \"$$(basename $$f .am)\","; done; echo '  0};'; \
+	  echo 'const char *am_lib_texts[] = {'; for f in lib/*.am; do awk '{ gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "  \"%s\\n\"\n", $$0 } END { print "  ," }' $$f; done; echo '  0};'; } > $@
 
 src/%.o: src/%.c src/am.h src/msolve_bridge.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
@@ -27,6 +33,6 @@ test: amath
 	sh tests/run.sh
 
 clean:
-	rm -f amath src/*.o
+	rm -f amath src/*.o src/libtext.c
 
 .PHONY: deps test clean

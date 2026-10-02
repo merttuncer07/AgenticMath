@@ -9,6 +9,10 @@ while IFS= read -r line; do
   n=$((n+1))
   if [ "$got" != "$want" ]; then echo "FAIL: $stmt"; echo "  want: $want"; echo "  got:  $got"; fail=$((fail+1)); fi
 done < tests/cases.txt
+# a program: definitions, rules with patterns and conditions, recursion, show
+got=$(./amath tests/rules.am)
+n=$((n+1))
+[ "$got" = "$(cat tests/rules.out)" ] || { echo "FAIL: tests/rules.am"; echo "$got" | diff tests/rules.out - | head; fail=$((fail+1)); }
 # -j: one JSON line with answer, status, verdict, facts
 got=$(./amath -j -e 'factor(x^4 - 1)')
 n=$((n+1))

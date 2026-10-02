@@ -17,12 +17,11 @@ extern jmp_buf am_on_error;
 void am_fail(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 
 /* ---- the engines' contexts ---- */
-#define AM_MAXVARS 32
+#define AM_MAXVARS 64
 extern ca_ctx_t am_ca;                       /* exact numbers */
-extern fmpz_mpoly_ctx_t am_mp;               /* polynomials in the variables met so far */
+extern fmpz_mpoly_ctx_t am_mp;               /* polynomials in the variables and kernels met so far */
 extern const char *am_varnames[AM_MAXVARS];
 extern int am_nvars;
-int am_var_index(const char *name, size_t len);   /* registers a new variable */
 
 /* ---- values ---- */
 typedef enum { V_NUM, V_RF, V_LIST, V_EQ, V_BOOL, V_STR } Kind;
@@ -56,6 +55,20 @@ Value *v_neg(const Value *a);
 Value *v_pow(const Value *a, const Value *b);
 char *v_str_of(const Value *v);                  /* the answer as text (malloc'd) */
 
+/* ---- variables and kernels (kernel.c): sin(x), f(x), sqrt(2) among variables, as generators ---- */
+typedef struct {
+    char *name;
+    int kernel;                /* 0: a plain variable */
+    char *head; Value **args; int nargs;    /* a function term head(args) */
+    Value *numval;             /* an irrational number used as a generator */
+} AmVar;
+extern AmVar am_vars[AM_MAXVARS];
+int am_var_index(const char *name, size_t len);   /* a plain variable, registered on first use */
+Value *am_gen(int i);
+int am_gen_of(const Value *v);                     /* the generator v is exactly, or -1 */
+Value *am_kernel_value(const char *head, Value **args, int n);
+Value *am_number_kernel(const Value *num);
+
 /* ---- the account of a statement: status, verdict, facts, work ---- */
 typedef enum { S_NONE, S_EXACT, S_PROVED, S_CERTIFIED, S_PROBABLE, S_NUMERIC, S_UNKNOWN } Status;
 extern int am_json, am_show;
@@ -70,6 +83,11 @@ char *am_render(const char *input, const char *answer, const char *error);   /* 
 /* ---- the language ---- */
 char *am_run(const char *line, int *failed);    /* one statement; the rendered output, malloc'd, or NULL */
 void am_init(void);
+void am_load_library(void);                     /* the library written in the language (lib/ *.am, built in) */
+Value *am_call(const char *name, Value **args, int n);
+Value *am_reevaluate(Value *v);                 /* function terms evaluated again: numbers back to numbers */
+Value *am_subs_rf(const Value *f, Value **val);  /* values for the generators */
+int am_free_of(const Value *v, int x);   /* rules first, then the built-in, else a kernel */
 
 /* ---- built-in functions ---- */
 typedef Value *(*Builtin)(Value **args, int n);

@@ -10,6 +10,7 @@
 #include <flint/fmpz_poly.h>
 #include <flint/fmpz_mpoly_factor.h>
 #include <flint/qqbar.h>
+#include <flint/acb.h>
 #include <flint/ca_vec.h>
 
 #include "msolve_bridge.h"
@@ -59,7 +60,7 @@ static slong get_si(const Value *v, const char *what) {
 static int var_of(const Value *v) {
     if (v->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(v->rf), am_mp)) am_fail("expected a variable");
     const fmpz_mpoly_struct *p = fmpz_mpoly_q_numref(v->rf);
-    for (int i = 0; i < am_nvars; i++) if (fmpz_mpoly_is_gen(p, i, am_mp)) return i;
+    for (int i = 0; i < am_nvars; i++) if (fmpz_mpoly_is_gen(p, i, am_mp) && !am_vars[i].kernel) return i;
     am_fail("expected a variable");
 }
 
@@ -125,7 +126,7 @@ static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
         fmpq_t q; fmpq_init(q);
         int rat = v_is_rational(a[0], q);
         fmpq_clear(q);
-        if (!rat) am_fail("%s of an expression with variables: not supported yet (only numbers)", name);
+        if (!rat) return am_kernel_value(name, a, 1);       /* sin(x): a function term */
         a[0] = v_copy(a[0]);
         Value *t = v_num(); fmpq_t r; fmpq_init(r); v_is_rational(a[0], r); ca_set_fmpq(t->num, r, am_ca); fmpq_clear(r); a[0] = t;
     }
@@ -167,6 +168,7 @@ static Value *b_N(Value **a, int n) {
         b[0] = x->items[1]; r->items[1] = b_N(b, n);
         return r;
     }
+    if (x->kind == V_RF) x = am_reevaluate(x);              /* sqrt(2) kept among variables, sin(1/2): numbers again */
     if (x->kind == V_RF) {
         fmpq_t q; fmpq_init(q);
         if (!v_is_rational(x, q)) am_fail("N needs a number, not an expression with variables");
@@ -374,26 +376,78 @@ static Value *b_gcd(Value **a, int n) {
     return r;
 }
 
-/* d/dx of a rational function: (n' d - n d') / d^2 */
-static Value *diff_once(Value *f, int x) {
-    if (f->kind == V_NUM) { Value *z = v_num(); return z; }
-    Value *g = v_to_rf(f);
-    fmpz_mpoly_t dn, dd; fmpz_mpoly_init(dn, am_mp); fmpz_mpoly_init(dd, am_mp);
-    fmpz_mpoly_derivative(dn, fmpz_mpoly_q_numref(g->rf), x, am_mp);
-    fmpz_mpoly_derivative(dd, fmpz_mpoly_q_denref(g->rf), x, am_mp);
-    Value *N = rf_from_mpoly(fmpz_mpoly_q_numref(g->rf)), *D = rf_from_mpoly(fmpz_mpoly_q_denref(g->rf));
-    Value *r = v_div(v_sub(v_mul(rf_from_mpoly(dn), D), v_mul(N, rf_from_mpoly(dd))), v_mul(D, D));
-    fmpz_mpoly_clear(dn, am_mp); fmpz_mpoly_clear(dd, am_mp);
+/* is v free of the variable x, looking inside function terms? */
+int am_free_of(const Value *v, int x) {
+    if (v->kind == V_LIST || v->kind == V_EQ) { for (int i = 0; i < v->n; i++) if (!am_free_of(v->items[i], x)) return 0; return 1; }
+    if (v->kind != V_RF) return 1;
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) {
+        if (!used[i]) continue;
+        if (i == x) return 0;
+        if (am_vars[i].kernel && !am_vars[i].numval)
+            for (int j = 0; j < am_vars[i].nargs; j++) if (!am_free_of(am_vars[i].args[j], x)) return 0;
+    }
+    return 1;
+}
+
+/* d/dx of one generator: 1 for x, 0 for constants and other variables, the rules' answer for a function term */
+static Value *dgen(int v, int x) {
+    Value *z = v_num();
+    if (v == x) { ca_one(z->num, am_ca); return z; }
+    if (!am_vars[v].kernel || am_vars[v].numval) return z;
+    Value *g = am_gen(v);
+    if (am_free_of(g, x)) return z;
+    Value *args[2] = {g, am_gen(x)};
+    return am_call("diff", args, 2);
+}
+
+/* d/dx of a polynomial with integer coefficients, through the chain rule */
+static Value *dpoly(const fmpz_mpoly_t p, int x) {
+    Value *r = v_num();
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_used_vars(used, p, am_mp);
+    fmpz_mpoly_t d; fmpz_mpoly_init(d, am_mp);
+    for (int v = 0; v < am_nvars; v++) {
+        if (!used[v]) continue;
+        Value *dv = dgen(v, x);
+        if (dv->kind == V_NUM && ca_check_is_zero(dv->num, am_ca) == T_TRUE) continue;
+        fmpz_mpoly_derivative(d, p, v, am_mp);
+        r = v_add(r, v_mul(rf_from_mpoly(d), dv));
+    }
+    fmpz_mpoly_clear(d, am_mp);
     return r;
 }
+
+/* d/dx of a rational function: (N' D - N D') / D^2 */
+static Value *diff_once(Value *f, int x) {
+    if (f->kind == V_NUM) return v_num();
+    if (f->kind == V_LIST || f->kind == V_EQ) {
+        Value *r = v_list(f->n); r->kind = f->kind;
+        for (int i = 0; i < f->n; i++) r->items[i] = diff_once(f->items[i], x);
+        return r;
+    }
+    if (f->kind != V_RF) am_fail("diff needs an expression");
+    int g = am_gen_of(f);                                       /* a lone function term no rule knows: f'(x) stays symbolic */
+    if (g >= 0 && am_vars[g].kernel && !am_vars[g].numval) {
+        if (am_free_of(f, x)) return v_num();
+        Value *args[2] = {f, am_gen(x)};
+        return am_kernel_value("diff", args, 2);
+    }
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(f->rf), *D = fmpz_mpoly_q_denref(f->rf);
+    Value *dN = dpoly(N, x);
+    if (fmpz_mpoly_is_one(D, am_mp)) return dN;
+    Value *Nv = rf_from_mpoly(N), *Dv = rf_from_mpoly(D);
+    return v_div(v_sub(v_mul(dN, Dv), v_mul(Nv, dpoly(D, x))), v_mul(Dv, Dv));
+}
 static Value *b_diff(Value **a, int n) {
-    Value *m = map1(b_diff, a, n); if (m) return m;
     need(n, 1, 3, "diff");
     int x = main_var(a[0], a, n, 1, "diff");
     slong k = n > 2 ? get_si(a[2], "the order") : 1;
     if (k < 0 || k > 10000) am_fail("diff: order between 0 and 10000");
+    if (n == 2) return diff_once(a[0], x);                    /* the rules for diff(f, x) were tried before this */
     Value *f = a[0];
-    for (slong i = 0; i < k; i++) f = diff_once(f, x);
+    for (slong i = 0; i < k; i++) { Value *args[2] = {f, am_gen(x)}; f = am_call("diff", args, 2); }
     return f;
 }
 
@@ -459,7 +513,7 @@ static Value *mpoly_subs(const fmpz_mpoly_t p, Value **val) {
     fmpz_clear(c);
     return sum;
 }
-static Value *subs_rf(const Value *f, Value **val) {
+Value *am_subs_rf(const Value *f, Value **val) {
     if (f->kind != V_RF) return (Value *)f;
     Value *N = mpoly_subs(fmpz_mpoly_q_numref(f->rf), val), *D = mpoly_subs(fmpz_mpoly_q_denref(f->rf), val);
     if (D->kind == V_NUM && ca_check_is_zero(D->num, am_ca) == T_TRUE) am_fail("the substitution makes a denominator 0");
@@ -486,13 +540,21 @@ static Value *b_subs(Value **a, int n) {
             val[var_of(eqs[i]->items[0])] = eqs[i]->items[1];
         }
     }
+    for (int i = 0; i < am_nvars; i++) {                         /* function terms: their arguments substituted, then re-evaluated */
+        if (!am_vars[i].kernel) continue;
+        if (am_vars[i].numval) { val[i] = am_vars[i].numval; continue; }
+        Value **ka = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *ka);
+        for (int j = 0; j < am_vars[i].nargs; j++) ka[j] = am_subs_rf(am_vars[i].args[j], val);
+        val[i] = am_call(am_vars[i].head, ka, am_vars[i].nargs);
+        free(ka);
+    }
     Value *f = a[0];
     if (f->kind == V_LIST || f->kind == V_EQ) {
         Value *r = v_list(f->n); r->kind = f->kind;
-        for (int i = 0; i < f->n; i++) r->items[i] = subs_rf(f->items[i], val);
+        for (int i = 0; i < f->n; i++) r->items[i] = am_subs_rf(f->items[i], val);
         return r;
     }
-    return subs_rf(f, val);
+    return am_subs_rf(f, val);
 }
 
 /* ---------------- roots: exact algebraic numbers (qqbar) ---------------- */
@@ -671,6 +733,29 @@ static Value *solve_system(Value **eqs, int ne, int *vars, int nvar) {
         }
         sols[nsol++] = sol;
     }
+    /* a fixed order, whatever msolve's random choices: by the real, then imaginary, parts of x1, x2, ... */
+    double *key = calloc((size_t)(nsol ? nsol : 1) * (size_t)nvar * 2, sizeof(double));
+    for (int k = 0; k < nsol; k++)
+        for (int i = 0; i < nvar; i++) {
+            acb_t z; acb_init(z);
+            ca_get_acb(z, sols[k]->items[i]->items[1]->num, 64, am_ca);
+            key[(k * nvar + i) * 2] = arf_get_d(arb_midref(acb_realref(z)), ARF_RND_NEAR);
+            key[(k * nvar + i) * 2 + 1] = arf_get_d(arb_midref(acb_imagref(z)), ARF_RND_NEAR);
+            acb_clear(z);
+        }
+    for (int i = 1; i < nsol; i++)
+        for (int j = i; j > 0; j--) {
+            int c = 0;
+            for (int t = 0; t < 2 * nvar && !c; t++) {
+                int ti = (t % nvar) * 2 + t / nvar;                 /* all real parts first, then imaginary parts */
+                double a = key[(j - 1) * nvar * 2 + ti], b = key[j * nvar * 2 + ti];
+                if (a < b - 1e-12) c = -1; else if (a > b + 1e-12) c = 1;
+            }
+            if (c <= 0) break;
+            Value *tv = sols[j]; sols[j] = sols[j - 1]; sols[j - 1] = tv;
+            for (int t = 0; t < 2 * nvar; t++) { double d = key[j * nvar * 2 + t]; key[j * nvar * 2 + t] = key[(j - 1) * nvar * 2 + t]; key[(j - 1) * nvar * 2 + t] = d; }
+        }
+    free(key);
     free(out->items); out->items = sols; out->n = nsol;
     _qqbar_vec_clear(r, deg);
     am_fact("solutions", "%d", nsol);

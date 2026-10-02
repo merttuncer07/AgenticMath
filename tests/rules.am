@@ -1,0 +1,19 @@
+diff(sin(x), x, 3)
+fact(0) := 1
+fact(n) := n*fact(n - 1) if n > 0
+fact(20)
+fib(n) := if(n < 2, n, fib(n - 1) + fib(n - 2))
+fib(20)
+sq(t) := t^2
+map(sq, [1, 2, 3, x])
+L = [10, 20, 30]
+L[2]
+mylog(exp(u)) := u
+mylog(exp(x^2 + 1))
+mylog(sin(x))
+h(x, y) = x*y + 1
+h(2, 3)
+show diff(sin(x)*exp(x), x)
+show fact(3)
+not (1 < 2) or 3 == 3
+fact(-1)

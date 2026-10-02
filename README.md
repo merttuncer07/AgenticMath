@@ -25,6 +25,31 @@ What agents already write: `x^2` or `x**2`, `2x`, `3(x + 1)`, `sqrt`, `pi`, `E`,
 `x^2 = 2`, tests `==`, `<`, names `a = ...`. Decimals are exact (`0.1` is 1/10). Multi-letter names are single
 variables (`xy` is one variable).
 
+## Defining mathematics in the language
+Functions are defined by rules, and the library is written this way, so the language grows without growing its C
+core.
+
+    fact(0) := 1
+    fact(n) := n*fact(n - 1) if n > 0          # a condition
+    fib(n) := if(n < 2, n, fib(n - 1) + fib(n - 2))
+    mylog(exp(u)) := u                         # a pattern: matches exp(...) and binds u
+    h(x, y) = x*y + 1                          # = also defines, when the arguments are plain names
+    map(sq, [1, 2, 3]),  L[2],  a and b,  not c
+
+Rules are tried in the order written; the first whose patterns match and whose condition holds gives the value.
+A rule for a built-in name is tried before the built-in, which is how `lib/prelude.am` teaches `diff` the
+derivatives of sin, exp, log, ...:
+
+    diff(sin(u), x) := cos(u)*diff(u, x)
+
+`show` prints every rule as it is applied. A call that nothing evaluates stays symbolic (`f(x)`, `mylog(sin(x))`)
+and the facts say so (`undefined_function`, `unevaluated`), so a misspelled name is noticed.
+
+Function terms such as `sin(x)`, `exp(x^2)`, `f(x)`, and irrational numbers among variables (`sqrt(2)*x`) are
+generators of the polynomial arithmetic: `2*sin(x) + sin(x)` is `3*sin(x)`, `diff(log(sin(x)), x)` is
+`cos(x)/sin(x)`, `subs` and `N` look inside them. An equality the arithmetic cannot settle, such as
+`sin(x)^2 + cos(x)^2 == 1`, answers `unknown`, never a guess.
+
 ## Functions (v0.1)
 | | |
 |---|---|

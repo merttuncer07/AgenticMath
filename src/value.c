@@ -89,7 +89,7 @@ Value *v_to_rf(const Value *v) {
     fmpq_t q; fmpq_init(q);
     if (!v_is_rational(v, q)) {
         fmpq_clear(q);
-        if (v->kind == V_NUM) am_fail("an irrational number such as sqrt(2) or pi combined with a variable: not supported yet");
+        if (v->kind == V_NUM) return am_number_kernel(v);   /* sqrt(2) among variables: a generator */
         am_fail("expected a number or a polynomial");
     }
     Value *r = v_rf();

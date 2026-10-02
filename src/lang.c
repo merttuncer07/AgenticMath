@@ -1,16 +1,26 @@
 /* The language: notation agents already write, read into a tree and evaluated.
  *
- *   statement := ["show"] ( NAME "=" expr | expr )
- *   expr      := sum [ ("=" | "==" | "!=" | "<" | "<=" | ">" | ">=") sum ]   "=" makes an equation, the others a test
- *   sum       := term { ("+" | "-") term }
- *   term      := unary { ("*" | "/") unary | primary }                          2x, 3(x + 1), (x + 1)(x - 1)
- *   unary     := "-" unary | power
- *   power     := postfix [ ("^" | "**") unary ]
- *   postfix   := primary { "!" }
- *   primary   := NUMBER | NAME | NAME "(" [args] ")" | "(" expr ")" | "[" [args] "]"
+ *   statement  := ["show"] ( definition | NAME "=" expr | expr )
+ *   definition := NAME "(" patterns ")" ":=" expr ["if" expr]          also "=" when the patterns are plain names
+ *   expr       := conj { "or" conj }
+ *   conj       := neg { "and" neg }
+ *   neg        := "not" neg | rel
+ *   rel        := sum [ ("=" | "==" | "!=" | "<" | "<=" | ">" | ">=") sum ]  "=" makes an equation, the others a test
+ *   sum        := term { ("+" | "-") term }
+ *   term       := unary { ("*" | "/") unary | primary }                      2x, 3(x + 1), (x + 1)(x - 1)
+ *   unary      := "-" unary | power
+ *   power      := postfix [ ("^" | "**") unary ]
+ *   postfix    := primary { "!" | "[" expr "]" }                          a[1] is the first element
+ *   primary    := NUMBER | NAME | NAME "(" [args] ")" | "(" expr ")" | "[" [args] "]"
  *
- * Names are whole words (xy is one variable). A name that is not bound is a variable. pi, E and I are numbers.
- * Decimals are read exactly (0.1 is 1/10). */
+ * Names are whole words (xy is one variable). A name that is not bound is a variable; a call to a name that is
+ * neither defined nor built in stays as a symbolic function term, f(x). pi, E and I are numbers. Decimals are
+ * read exactly (0.1 is 1/10).
+ *
+ * Functions are defined by rules. A rule's patterns are names (match anything), numbers (match that number),
+ * calls such as sin(u) (match a function term with that head and bind its arguments), or lists. Rules are tried
+ * in the order written; the first whose patterns match and whose condition holds gives the value. A built-in
+ * function is tried after the rules for its name, so the library can extend it (diff of sin(u) is a rule). */
 #include "am.h"
 
 #include <ctype.h>
@@ -30,47 +40,6 @@ void am_fail(const char *fmt, ...) {
     longjmp(am_on_error, 1);
 }
 
-/* ---------------- contexts and variables ---------------- */
-
-ca_ctx_t am_ca;
-fmpz_mpoly_ctx_t am_mp;
-const char *am_varnames[AM_MAXVARS];
-int am_nvars;
-
-int am_var_index(const char *name, size_t len) {
-    for (int i = 0; i < am_nvars; i++) if (strlen(am_varnames[i]) == len && !strncmp(am_varnames[i], name, len)) return i;
-    if (am_nvars == AM_MAXVARS) am_fail("more than %d variables", AM_MAXVARS);
-    char *s = malloc(len + 1); memcpy(s, name, len); s[len] = 0;
-    am_varnames[am_nvars] = s;
-    return am_nvars++;
-}
-
-void am_init(void) {
-    ca_ctx_init(am_ca);
-    fmpz_mpoly_ctx_init(am_mp, AM_MAXVARS, ORD_DEGREVLEX);
-    static char unused[AM_MAXVARS][8];
-    for (int i = 0; i < AM_MAXVARS; i++) { snprintf(unused[i], sizeof unused[i], "_v%d", i); am_varnames[i] = unused[i]; }
-}
-
-/* ---------------- names bound with = ---------------- */
-
-typedef struct { char *name; Value *v; } Binding;
-static Binding *binds;
-static int nbinds;
-
-static Value *lookup(const char *s, size_t len) {
-    for (int i = nbinds - 1; i >= 0; i--) if (strlen(binds[i].name) == len && !strncmp(binds[i].name, s, len)) return binds[i].v;
-    return NULL;
-}
-static void bind(const char *s, size_t len, Value *v) {
-    am_pool_keep(v);
-    for (int i = 0; i < nbinds; i++)
-        if (strlen(binds[i].name) == len && !strncmp(binds[i].name, s, len)) { binds[i].v = v; return; }
-    binds = realloc(binds, (size_t)(nbinds + 1) * sizeof *binds);
-    binds[nbinds].name = malloc(len + 1); memcpy(binds[nbinds].name, s, len); binds[nbinds].name[len] = 0;
-    binds[nbinds++].v = v;
-}
-
 /* ---------------- tokens ---------------- */
 
 typedef enum { T_NUM, T_NAME, T_OP, T_END } TKind;
@@ -83,8 +52,8 @@ static void lex(const char *p) {
     for (;;) {
         int sp = 0;
         while (*p && isspace((unsigned char)*p)) { p++; sp = 1; }
-        if (*p == '#') break;                                  /* a comment to the end of the line */
-        if (ntok >= 4095) am_fail("statement too long");
+        if (*p == '#') { while (*p) p++; }                     /* a comment to the end of the line */
+        if (ntok >= 4094) am_fail("statement too long");
         Tok *t = &toks[ntok++];
         t->s = p; t->spaced = sp;
         if (!*p) { t->k = T_END; t->len = 0; return; }
@@ -108,12 +77,12 @@ static void lex(const char *p) {
         }
         t->len = (size_t)(p - t->s);
     }
-    toks[ntok].k = T_END; ntok++;
 }
 
 static Tok *peek(void) { return &toks[pos]; }
-static int at_op(const char *op) { Tok *t = peek(); return t->k == T_OP && t->len == strlen(op) && !strncmp(t->s, op, t->len); }
-static int at_name(const char *w) { Tok *t = peek(); return t->k == T_NAME && t->len == strlen(w) && !strncmp(t->s, w, t->len); }
+static int is_op(const Tok *t, const char *op) { return t->k == T_OP && t->len == strlen(op) && !strncmp(t->s, op, t->len); }
+static int at_op(const char *op) { return is_op(peek(), op); }
+static int at_word(const char *w) { Tok *t = peek(); return t->k == T_NAME && t->len == strlen(w) && !strncmp(t->s, w, t->len); }
 static void expect(const char *op) {
     if (!at_op(op)) {
         Tok *t = peek();
@@ -125,30 +94,32 @@ static void expect(const char *op) {
 
 /* ---------------- the tree ---------------- */
 
-typedef enum { N_NUM, N_NAME, N_CALL, N_LIST, N_NEG, N_BIN, N_FACT } NKind;
+typedef enum { N_NUM, N_NAME, N_CALL, N_LIST, N_NEG, N_BIN, N_FACT, N_INDEX, N_AND, N_OR, N_NOT } NKind;
 typedef struct Node Node;
-struct Node { NKind k; const char *s; size_t len; char op[3]; Node **a; int n; };
+struct Node { NKind k; char *s; size_t len; char op[3]; Node **a; int n; };
 
 static Node *mk(NKind k) { Node *n = calloc(1, sizeof *n); n->k = k; return n; }
+static Node *mk_tok(NKind k, const Tok *t) { Node *n = mk(k); n->s = strndup(t->s, t->len); n->len = t->len; return n; }
 static void add_arg(Node *n, Node *a) { n->a = realloc(n->a, (size_t)(n->n + 1) * sizeof(Node *)); n->a[n->n++] = a; }
-static void free_tree(Node *n) { if (!n) return; for (int i = 0; i < n->n; i++) free_tree(n->a[i]); free(n->a); free(n); }
+static void free_tree(Node *n) { if (!n) return; for (int i = 0; i < n->n; i++) free_tree(n->a[i]); free(n->a); free(n->s); free(n); }
+static int is_name(const Node *n, const char *w) { return n->k == N_NAME && !strcmp(n->s, w); }
 
 static Node *expr(void);
 static Node *unary(void);
 
 static Node *primary(void) {
     Tok *t = peek();
-    if (t->k == T_NUM) { pos++; Node *n = mk(N_NUM); n->s = t->s; n->len = t->len; return n; }
+    if (t->k == T_NUM) { pos++; return mk_tok(N_NUM, t); }
     if (t->k == T_NAME) {
         pos++;
         if (at_op("(") && !peek()->spaced) {                  /* f(x): a call; x (y) is a product */
             pos++;
-            Node *n = mk(N_CALL); n->s = t->s; n->len = t->len;
+            Node *n = mk_tok(N_CALL, t);
             if (!at_op(")")) for (;;) { add_arg(n, expr()); if (!at_op(",")) break; pos++; }
             expect(")");
             return n;
         }
-        Node *n = mk(N_NAME); n->s = t->s; n->len = t->len; return n;
+        return mk_tok(N_NAME, t);
     }
     if (at_op("(")) { pos++; Node *n = expr(); expect(")"); return n; }
     if (at_op("[")) {
@@ -166,10 +137,11 @@ static Node *bin(const char *op, Node *l, Node *r) { Node *n = mk(N_BIN); snprin
 
 static Node *postfix(void) {
     Node *n = primary();
-    while (at_op("!") && !(pos + 1 < ntok && toks[pos + 1].k == T_OP && toks[pos + 1].len == 1 && toks[pos + 1].s[0] == '=')) {
-        pos++; Node *f = mk(N_FACT); add_arg(f, n); n = f;
+    for (;;) {
+        if (at_op("!") && !is_op(&toks[pos + 1], "=")) { pos++; Node *f = mk(N_FACT); add_arg(f, n); n = f; }
+        else if (at_op("[") && !peek()->spaced) { pos++; Node *f = mk(N_INDEX); add_arg(f, n); add_arg(f, expr()); expect("]"); n = f; }
+        else return n;
     }
-    return n;
 }
 static Node *power(void) {
     Node *b = postfix();
@@ -181,11 +153,15 @@ static Node *unary(void) {
     if (at_op("+")) { pos++; return unary(); }
     return power();
 }
-static int starts_primary(void) { Tok *t = peek(); return t->k == T_NUM || t->k == T_NAME || at_op("("); }
+static int starts_primary(void) {
+    Tok *t = peek();
+    if (t->k == T_NAME && (at_word("and") || at_word("or") || at_word("if") || at_word("not"))) return 0;
+    return t->k == T_NUM || t->k == T_NAME || at_op("(");
+}
 static Node *term(void) {
     Node *n = unary();
     for (;;) {
-        if (at_op("*") ) { pos++; n = bin("*", n, unary()); }
+        if (at_op("*")) { pos++; n = bin("*", n, unary()); }
         else if (at_op("/")) { pos++; n = bin("/", n, unary()); }
         else if (starts_primary()) n = bin("*", n, power());   /* side by side multiplies */
         else return n;
@@ -199,19 +175,86 @@ static Node *sum(void) {
         else return n;
     }
 }
-static Node *expr(void) {
+static Node *rel(void) {
     Node *n = sum();
-    static const char *rel[] = {"==", "!=", "<=", ">=", "=", "<", ">", NULL};
-    for (int i = 0; rel[i]; i++) if (at_op(rel[i])) { pos++; return bin(rel[i], n, sum()); }
+    static const char *ops[] = {"==", "!=", "<=", ">=", "=", "<", ">", NULL};
+    for (int i = 0; ops[i]; i++) if (at_op(ops[i])) { pos++; return bin(ops[i], n, sum()); }
     return n;
+}
+static Node *neg(void) {
+    if (at_word("not")) { pos++; Node *n = mk(N_NOT); add_arg(n, neg()); return n; }
+    return rel();
+}
+static Node *conj(void) {
+    Node *n = neg();
+    while (at_word("and")) { pos++; Node *a = mk(N_AND); add_arg(a, n); add_arg(a, neg()); n = a; }
+    return n;
+}
+static Node *expr(void) {
+    Node *n = conj();
+    while (at_word("or")) { pos++; Node *a = mk(N_OR); add_arg(a, n); add_arg(a, conj()); n = a; }
+    return n;
+}
+
+/* ---------------- names, rules and local scope ---------------- */
+
+typedef struct { char *name; Value *v; } Binding;
+static Binding *globals;
+static int nglobals;
+
+typedef struct Rule { char *name; Node **pat; int np; Node *body, *cond; char *src; } Rule;
+static Rule *rules;
+static int nrules;
+
+#define MAXLOCAL 64
+typedef struct { const char *name[MAXLOCAL]; Value *v[MAXLOCAL]; int n; } Frame;
+static Frame *frame;              /* the innermost rule being evaluated, or NULL at top level */
+static int depth;
+
+static Value *lookup(const char *s) {
+    if (frame) for (int i = frame->n - 1; i >= 0; i--) if (!strcmp(frame->name[i], s)) return frame->v[i];
+    for (int i = nglobals - 1; i >= 0; i--) if (!strcmp(globals[i].name, s)) return globals[i].v;
+    return NULL;
+}
+static void bind_global(const char *s, Value *v) {
+    am_pool_keep(v);
+    for (int i = 0; i < nglobals; i++) if (!strcmp(globals[i].name, s)) { globals[i].v = v; return; }
+    globals = realloc(globals, (size_t)(nglobals + 1) * sizeof *globals);
+    globals[nglobals].name = strdup(s);
+    globals[nglobals++].v = v;
+}
+static int has_rules(const char *name) { for (int i = 0; i < nrules; i++) if (!strcmp(rules[i].name, name)) return 1; return 0; }
+
+static int same_tree(const Node *a, const Node *b) {
+    if (a->k != b->k || a->n != b->n || strcmp(a->op, b->op)) return 0;
+    if ((a->s || b->s) && (!a->s || !b->s || strcmp(a->s, b->s))) return 0;
+    for (int i = 0; i < a->n; i++) if (!same_tree(a->a[i], b->a[i])) return 0;
+    return 1;
+}
+
+static void add_rule(const char *name, Node **pat, int np, Node *body, Node *cond, const char *src) {
+    for (int i = 0; i < nrules; i++) {                         /* the same patterns again: the new rule replaces it */
+        Rule *r = &rules[i];
+        if (strcmp(r->name, name) || r->np != np || (r->cond != NULL) != (cond != NULL)) continue;
+        int same = 1;
+        for (int j = 0; j < np && same; j++) same = same_tree(r->pat[j], pat[j]);
+        if (same && cond) same = same_tree(r->cond, cond);
+        if (same) { r->body = body; r->cond = cond; free(r->src); r->src = strdup(src); return; }
+    }
+    rules = realloc(rules, (size_t)(nrules + 1) * sizeof *rules);
+    rules[nrules].name = strdup(name); rules[nrules].pat = pat; rules[nrules].np = np;
+    rules[nrules].body = body; rules[nrules].cond = cond; rules[nrules].src = strdup(src);
+    nrules++;
 }
 
 /* ---------------- evaluation ---------------- */
 
 static Value *eval(Node *n);
+static int library_loading;
+static int in_condition;          /* inside a rule's condition or if/and/or/not: a decided test does not label the answer */
 
 static Value *number(const char *s, size_t len) {
-    char *t = malloc(len + 1); memcpy(t, s, len); t[len] = 0;
+    char *t = strndup(s, len);
     char *e = strpbrk(t, "eE");
     long ex = 0;
     if (e) { ex = strtol(e + 1, NULL, 10); *e = 0; }
@@ -233,67 +276,245 @@ static Value *number(const char *s, size_t len) {
     return v;
 }
 
+/* a value with its function terms evaluated again: sqrt(2) as a generator becomes the number, sin(1) a number */
+#define reevaluate am_reevaluate
+
+static int truth_of(Value *v, const char *what) {
+    if (v->kind != V_BOOL) am_fail("%s must be true or false", what);
+    if (v->truth < 0) am_fail("%s could not be decided", what);
+    return v->truth;
+}
+
 static Value *compare(const char *op, Value *a, Value *b) {
     if (!strcmp(op, "=")) { Value *r = v_list(2); r->kind = V_EQ; r->items[0] = a; r->items[1] = b; return r; }
     Value *d = v_sub(a, b);
+    if (d->kind == V_RF) d = reevaluate(d);
     truth_t t;
-    if (d->kind == V_RF) {                                     /* polynomials are equal exactly when the difference is 0 */
+    if (d->kind == V_RF) {
         if (strcmp(op, "==") && strcmp(op, "!=")) am_fail("'%s' compares numbers, not expressions with variables", op);
-        t = fmpz_mpoly_q_is_zero(d->rf, am_mp) ? T_TRUE : T_FALSE;
-        am_status(S_PROVED, "the difference is identically 0 as a rational function");
+        int kernels = 0;
+        int used[AM_MAXVARS] = {0};
+        fmpz_mpoly_q_used_vars(used, d->rf, am_mp);
+        for (int i = 0; i < am_nvars; i++) if (used[i] && am_vars[i].kernel) kernels = 1;
+        if (fmpz_mpoly_q_is_zero(d->rf, am_mp)) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference is identically 0"); }
+        else if (!kernels) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the difference is a nonzero rational function"); }
+        else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that the arithmetic cannot decide"); }
     } else if (d->kind == V_NUM) {
+        if (a->kind != V_NUM) a = reevaluate(a);
+        if (b->kind != V_NUM) b = reevaluate(b);
         if (!strcmp(op, "==") || !strcmp(op, "!=")) t = ca_check_is_zero(d->num, am_ca);
+        else if (a->kind != V_NUM || b->kind != V_NUM) am_fail("'%s' compares numbers", op);
         else if (!strcmp(op, "<")) t = ca_check_lt(a->num, b->num, am_ca);
         else if (!strcmp(op, "<=")) t = ca_check_le(a->num, b->num, am_ca);
         else if (!strcmp(op, ">")) t = ca_check_gt(a->num, b->num, am_ca);
         else t = ca_check_ge(a->num, b->num, am_ca);
         if (t == T_UNKNOWN) am_status(S_UNKNOWN, "the exact arithmetic could not decide");
-        else am_status(S_PROVED, "decided by exact arithmetic (Calcium)");
+        else if (!in_condition) am_status(S_PROVED, "decided by exact arithmetic (Calcium)");
+    } else if (d->kind == V_LIST) {                           /* lists: equal when every element is */
+        t = T_TRUE;
+        for (int i = 0; i < d->n; i++) {
+            Value *z = v_num();
+            Value *c = compare("==", d->items[i], z);
+            if (c->truth == 0) { t = T_FALSE; break; }
+            if (c->truth < 0) t = T_UNKNOWN;
+        }
+        if (strcmp(op, "==") && strcmp(op, "!=")) am_fail("'%s' compares numbers", op);
     } else am_fail("'%s' compares numbers or expressions", op);
     if (!strcmp(op, "!=") && t != T_UNKNOWN) t = t == T_TRUE ? T_FALSE : T_TRUE;
     return v_bool(t == T_TRUE ? 1 : t == T_FALSE ? 0 : -1);
+}
+
+/* a == b exactly, without touching the statement's status */
+static int equal_quiet(Value *a, Value *b) {
+    if (a->kind != b->kind && !((a->kind == V_NUM || a->kind == V_RF) && (b->kind == V_NUM || b->kind == V_RF))) return 0;
+    if (a->kind == V_LIST || a->kind == V_EQ) {
+        if (a->n != b->n) return 0;
+        for (int i = 0; i < a->n; i++) if (!equal_quiet(a->items[i], b->items[i])) return 0;
+        return 1;
+    }
+    if (a->kind == V_BOOL) return a->truth == b->truth;
+    if (a->kind == V_STR) return !strcmp(a->str, b->str);
+    Value *d = v_sub(a, b);
+    if (d->kind == V_NUM) return ca_check_is_zero(d->num, am_ca) == T_TRUE;
+    return fmpz_mpoly_q_is_zero(d->rf, am_mp);
+}
+
+/* does pattern p match v? binds names into f */
+static int match(Node *p, Value *v, Frame *f) {
+    switch (p->k) {
+    case N_NAME: {
+        for (int i = 0; i < f->n; i++)
+            if (!strcmp(f->name[i], p->s)) return equal_quiet(f->v[i], v);
+        if (f->n == MAXLOCAL) am_fail("too many names in a rule");
+        f->name[f->n] = p->s; f->v[f->n++] = v;
+        return 1;
+    }
+    case N_NUM: case N_NEG: {
+        Frame *save = frame; frame = NULL;
+        Value *w = eval(p);
+        frame = save;
+        fmpq_t a, b; fmpq_init(a); fmpq_init(b);
+        int ok = v_is_rational(v, a) && v_is_rational(w, b) && fmpq_equal(a, b);
+        fmpq_clear(a); fmpq_clear(b);
+        return ok;
+    }
+    case N_CALL: {                                            /* sin(u) matches the function term sin(...) */
+        int g = am_gen_of(v);
+        if (g < 0 || !am_vars[g].head || strcmp(am_vars[g].head, p->s) || am_vars[g].nargs != p->n) return 0;
+        for (int i = 0; i < p->n; i++) if (!match(p->a[i], am_vars[g].args[i], f)) return 0;
+        return 1;
+    }
+    case N_LIST:
+        if (v->kind != V_LIST || v->n != p->n) return 0;
+        for (int i = 0; i < p->n; i++) if (!match(p->a[i], v->items[i], f)) return 0;
+        return 1;
+    default:
+        am_fail("a rule's patterns are names, numbers, calls such as sin(u), or lists");
+    }
+}
+
+/* a call to a name with no rules and no built-in: said in the facts, so a misspelled name is noticed */
+static void note_undefined(const char *name) {
+    if (library_loading) return;
+    char *js = am_json_str(name);
+    am_fact("undefined_function", "%s", js);
+    free(js);
+}
+
+Value *am_call(const char *name, Value **args, int n) {
+    for (int r = 0; r < nrules; r++) {
+        Rule *R = &rules[r];
+        if (strcmp(R->name, name) || R->np != n) continue;
+        Frame *f = calloc(1, sizeof *f);
+        int ok = 1;
+        for (int i = 0; i < n && ok; i++) ok = match(R->pat[i], args[i], f);
+        if (ok) {
+            if (++depth > 2000) { depth = 0; free(f); am_fail("%s: more than 2000 nested calls", name); }
+            Frame *save = frame; frame = f;
+            if (R->cond) {
+                in_condition++;
+                Value *c = eval(R->cond);
+                in_condition--;
+                if (c->kind == V_BOOL && c->truth < 0) am_fail("the condition of the rule %s could not be decided", R->src);
+                ok = c->kind == V_BOOL && c->truth == 1;
+            }
+            if (ok) {
+                if (!library_loading) am_work("%s", R->src);
+                Value *v = eval(R->body);
+                frame = save; depth--; free(f);
+                return v;
+            }
+            frame = save; depth--;
+        }
+        free(f);
+    }
+    Builtin b = am_builtin(name, strlen(name));
+    if (b) return b(args, n);
+    if (has_rules(name)) {                                    /* rules exist, none applies: the call stays as it is */
+        if (!library_loading) { char *js = am_json_str(name); am_fact("unevaluated", "%s", js); free(js); }
+        return am_kernel_value(name, args, n);
+    }
+    note_undefined(name);
+    return am_kernel_value(name, args, n);                   /* an undefined function stays symbolic: f(x) */
+}
+
+/* re-evaluate the generators of a rational function: numbers back to numbers, function terms by their rules */
+Value *am_reevaluate(Value *v) {
+    if (v->kind == V_LIST || v->kind == V_EQ) {
+        Value *r = v_list(v->n); r->kind = v->kind;
+        for (int i = 0; i < v->n; i++) r->items[i] = reevaluate(v->items[i]);
+        return r;
+    }
+    if (v->kind != V_RF) return v;
+    int used[AM_MAXVARS] = {0}, any = 0;
+    fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) if (used[i] && am_vars[i].kernel) any = 1;
+    if (!any) return v;
+    Value *val[AM_MAXVARS];
+    for (int i = 0; i < am_nvars; i++) {
+        val[i] = am_gen(i);
+        if (!used[i] || !am_vars[i].kernel) continue;
+        if (am_vars[i].numval) val[i] = am_vars[i].numval;
+        else {
+            Value **a = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *a);
+            for (int j = 0; j < am_vars[i].nargs; j++) a[j] = reevaluate(am_vars[i].args[j]);
+            val[i] = am_call(am_vars[i].head, a, am_vars[i].nargs);
+            free(a);
+        }
+    }
+    return am_subs_rf(v, val);
+}
+
+static Value *eval_call(Node *n) {
+    /* special forms: their arguments are not all evaluated first */
+    if (!strcmp(n->s, "if")) {
+        if (n->n != 3) am_fail("if(condition, then, else) takes three arguments");
+        in_condition++;
+        int t = truth_of(eval(n->a[0]), "the condition of if");
+        in_condition--;
+        return t ? eval(n->a[1]) : eval(n->a[2]);
+    }
+    if (!strcmp(n->s, "map")) {
+        if (n->n != 2 || n->a[0]->k != N_NAME) am_fail("map(f, list) takes a function name and a list");
+        Value *l = eval(n->a[1]);
+        if (l->kind != V_LIST) am_fail("map needs a list");
+        Value *r = v_list(l->n);
+        for (int i = 0; i < l->n; i++) r->items[i] = am_call(n->a[0]->s, &l->items[i], 1);
+        return r;
+    }
+    Value **args = calloc((size_t)(n->n ? n->n : 1), sizeof(Value *));
+    for (int i = 0; i < n->n; i++) args[i] = eval(n->a[i]);
+    if (n->n == 1 && !has_rules(n->s) && !am_builtin(n->s, n->len)) {   /* x(x + 1) where x is a variable or a value */
+        Value *b = lookup(n->s);
+        int plain = 0;
+        for (int i = 0; i < am_nvars && !b; i++) if (!am_vars[i].kernel && !strcmp(am_varnames[i], n->s)) plain = 1;
+        if (b || plain) { Value *r = v_mul(b ? b : am_gen(am_var_index(n->s, n->len)), args[0]); free(args); return r; }
+    }
+    Value *r = am_call(n->s, args, n->n);
+    free(args);
+    return r;
 }
 
 static Value *eval(Node *n) {
     switch (n->k) {
     case N_NUM: return number(n->s, n->len);
     case N_NAME: {
-        Value *b = lookup(n->s, n->len);
+        Value *b = lookup(n->s);
         if (b) return b;
-        if (n->len == 2 && !strncmp(n->s, "pi", 2)) { Value *v = v_num(); ca_pi(v->num, am_ca); return v; }
-        if (n->len == 1 && n->s[0] == 'E') { Value *v = v_num(); ca_one(v->num, am_ca); ca_exp(v->num, v->num, am_ca); return v; }
-        if (n->len == 1 && n->s[0] == 'I') { Value *v = v_num(); ca_i(v->num, am_ca); return v; }
-        if (am_builtin(n->s, n->len)) am_fail("%.*s is a function: write %.*s(...)", (int)n->len, n->s, (int)n->len, n->s);
-        int i = am_var_index(n->s, n->len);                   /* an unbound name is a variable */
-        Value *v = v_rf();
-        fmpz_mpoly_gen(fmpz_mpoly_q_numref(v->rf), i, am_mp);
-        fmpz_mpoly_one(fmpz_mpoly_q_denref(v->rf), am_mp);
-        return v;
+        if (!strcmp(n->s, "pi")) { Value *v = v_num(); ca_pi(v->num, am_ca); return v; }
+        if (!strcmp(n->s, "E")) { Value *v = v_num(); ca_one(v->num, am_ca); ca_exp(v->num, v->num, am_ca); return v; }
+        if (!strcmp(n->s, "I")) { Value *v = v_num(); ca_i(v->num, am_ca); return v; }
+        if (!strcmp(n->s, "true")) return v_bool(1);
+        if (!strcmp(n->s, "false")) return v_bool(0);
+        if (am_builtin(n->s, n->len) || has_rules(n->s)) am_fail("%s is a function: write %s(...)", n->s, n->s);
+        return am_gen(am_var_index(n->s, n->len));            /* an unbound name is a variable */
     }
-    case N_CALL: {
-        Builtin f = am_builtin(n->s, n->len);
-        Value **args = calloc((size_t)(n->n ? n->n : 1), sizeof(Value *));
-        for (int i = 0; i < n->n; i++) args[i] = eval(n->a[i]);
-        if (!f) {
-            if (n->n == 1 && n->len == 1 && !lookup(n->s, n->len)) {   /* x(y + 1) with a one-letter x: a product */
-                Node nm = {N_NAME, n->s, n->len, "", NULL, 0};
-                Value *r = v_mul(eval(&nm), args[0]);
-                free(args);
-                return r;
-            }
-            free(args);
-            am_fail("unknown function %.*s", (int)n->len, n->s);
-        }
-        Value *r = f(args, n->n);
-        free(args);
-        return r;
-    }
+    case N_CALL: return eval_call(n);
     case N_LIST: {
         Value *v = v_list(n->n);
         for (int i = 0; i < n->n; i++) v->items[i] = eval(n->a[i]);
         return v;
     }
+    case N_INDEX: {
+        Value *l = eval(n->a[0]), *i = eval(n->a[1]);
+        fmpq_t q; fmpq_init(q);
+        if (l->kind != V_LIST && l->kind != V_EQ) am_fail("only a list can be indexed");
+        if (!v_is_rational(i, q) || !fmpz_is_one(fmpq_denref(q)) || fmpz_cmp_si(fmpq_numref(q), 1) < 0 || fmpz_cmp_si(fmpq_numref(q), l->n) > 0)
+            am_fail("index out of range: the list has %d elements (the first is [1])", l->n);
+        slong k = fmpz_get_si(fmpq_numref(q));
+        fmpq_clear(q);
+        return l->items[k - 1];
+    }
     case N_NEG: return v_neg(eval(n->a[0]));
+    case N_NOT: { in_condition++; Value *a = eval(n->a[0]); in_condition--; return v_bool(a->kind == V_BOOL && a->truth >= 0 ? !a->truth : (truth_of(a, "not's argument"), -1)); }
+    case N_AND: case N_OR: {
+        in_condition++;
+        int want = n->k == N_OR, t = truth_of(eval(n->a[0]), "a side of and/or");
+        if (t != want) t = truth_of(eval(n->a[1]), "a side of and/or");
+        in_condition--;
+        am_status(S_PROVED, "decided by exact arithmetic");
+        return v_bool(t);
+    }
     case N_FACT: {
         Value *a = eval(n->a[0]);
         fmpq_t q; fmpq_init(q);
@@ -321,48 +542,118 @@ static Value *eval(Node *n) {
     am_fail("internal: unknown node");
 }
 
-/* the status of an answer that no function labelled: exact arithmetic, or Calcium's exact numbers */
+/* the status of an answer that no function labelled: exact arithmetic */
 static void default_status(const Value *v) {
     if (v->kind == V_NUM || v->kind == V_RF) am_status(S_EXACT, "exact arithmetic");
     if (v->kind == V_LIST || v->kind == V_EQ) for (int i = 0; i < v->n; i++) default_status(v->items[i]);
 }
 
+/* NAME ( ... ) followed by := (or by = with plain-name patterns): a definition */
+static int definition_ahead(int *assign_at) {
+    if (peek()->k != T_NAME || !is_op(&toks[pos + 1], "(") || toks[pos + 1].spaced) return 0;
+    int d = 0, i = pos + 1;
+    for (; toks[i].k != T_END; i++) {
+        if (is_op(&toks[i], "(")) d++;
+        else if (is_op(&toks[i], ")") && --d == 0) break;
+    }
+    if (toks[i].k == T_END) return 0;
+    if (is_op(&toks[i + 1], ":=")) { *assign_at = i + 1; return 1; }
+    if (is_op(&toks[i + 1], "=")) {                           /* f(x, y) = ...: only with plain names inside */
+        for (int j = pos + 2; j < i; j++) if (!(toks[j].k == T_NAME || is_op(&toks[j], ","))) return 0;
+        if (am_builtin(toks[pos].s, toks[pos].len)) return 0;
+        *assign_at = i + 1; return 1;
+    }
+    return 0;
+}
+
+static char *run_statement(const char *line, Node *volatile *tree) {
+    lex(line);
+    if (peek()->k == T_END) return NULL;
+    if (at_word("show")) { pos++; am_show = 1; }
+    int at;
+    if (definition_ahead(&at)) {                              /* f(patterns) := body [if condition] */
+        Tok name = *peek();
+        pos += 2;
+        Node **pat = NULL; int np = 0;
+        if (!at_op(")")) for (;;) { pat = realloc(pat, (size_t)(np + 1) * sizeof *pat); pat[np++] = expr(); if (!at_op(",")) break; pos++; }
+        expect(")");
+        pos = at + 1;
+        Node *body = expr(), *cond = NULL;
+        if (at_word("if")) { pos++; cond = expr(); }
+        if (peek()->k != T_END) am_fail("unexpected '%.*s'", (int)peek()->len, peek()->s);
+        char *nm = strndup(name.s, name.len);
+        const char *src = line;
+        while (*src == ' ') src++;
+        char *s = strdup(src);
+        size_t L = strlen(s);
+        while (L && (s[L - 1] == '\n' || s[L - 1] == '\r')) s[--L] = 0;
+        add_rule(nm, pat, np, body, cond, s);
+        char *out = malloc(strlen(s) + 32);
+        sprintf(out, "defined %s", s);
+        free(nm); free(s);
+        return out;
+    }
+    const char *name = NULL; size_t nlen = 0;
+    if (peek()->k == T_NAME && (is_op(&toks[pos + 1], "=") || is_op(&toks[pos + 1], ":="))) {
+        name = peek()->s; nlen = peek()->len; pos += 2;        /* NAME = expr names a value */
+        if (am_builtin(name, nlen)) am_fail("%.*s is a built-in function and cannot be renamed", (int)nlen, name);
+    }
+    *tree = expr();
+    if (peek()->k != T_END) am_fail("unexpected '%.*s'", (int)peek()->len, peek()->s);
+    Value *v = eval(*tree);
+    if (!am_status_set()) default_status(v);
+    char *text = v_str_of(v);
+    if (name) {
+        char *nm = strndup(name, nlen);
+        bind_global(nm, v);
+        char *t2 = malloc(strlen(text) + nlen + 4);
+        sprintf(t2, "%s = %s", nm, text);
+        free(nm); free(text); text = t2;
+    }
+    return text;
+}
+
 char *am_run(const char *line, int *failed) {
     *failed = 0;
     am_show = 0;
+    frame = NULL; depth = 0; in_condition = 0;
     am_account_reset();
     Node *volatile tree = NULL;
     if (setjmp(am_on_error)) {
         *failed = 1;
         free_tree(tree);
+        frame = NULL; depth = 0;
         char *out = am_render(line, NULL, err_msg);
         am_pool_release();
         return out;
     }
-    lex(line);
-    if (peek()->k == T_END) return NULL;
-    if (at_name("show")) { pos++; am_show = 1; }
-    const char *name = NULL; size_t nlen = 0;
-    if (peek()->k == T_NAME && toks[pos + 1].k == T_OP && toks[pos + 1].len == 1 && toks[pos + 1].s[0] == '=') {
-        name = peek()->s; nlen = peek()->len; pos += 2;        /* NAME = expr names a value */
-    } else if (peek()->k == T_NAME && toks[pos + 1].k == T_OP && toks[pos + 1].len == 2 && !strncmp(toks[pos + 1].s, ":=", 2)) {
-        name = peek()->s; nlen = peek()->len; pos += 2;
-    }
-    if (name && am_builtin(name, nlen)) am_fail("%.*s is a built-in function and cannot be renamed", (int)nlen, name);
-    tree = expr();
-    if (peek()->k != T_END) am_fail("unexpected '%.*s'", (int)peek()->len, peek()->s);
-    Value *v = eval(tree);
-    free_tree(tree); tree = NULL;
-    if (!am_status_set()) default_status(v);
-    char *text = v_str_of(v);
-    if (name) {
-        bind(name, nlen, v);
-        char *t2 = malloc(strlen(text) + nlen + 4);
-        sprintf(t2, "%.*s = %s", (int)nlen, name, text);
-        free(text); text = t2;
-    }
+    char *text = run_statement(line, &tree);
+    free_tree(tree);
+    if (!text) { am_pool_release(); return NULL; }
     char *out = am_render(line, text, NULL);
     free(text);
     am_pool_release();
     return out;
+}
+
+/* the library, written in the language and compiled into the program */
+extern const char *am_lib_names[], *am_lib_texts[];
+void am_load_library(void) {
+    library_loading = 1;
+    for (int i = 0; am_lib_names[i]; i++) {
+        const char *p = am_lib_texts[i];
+        int lineno = 0;
+        while (*p) {
+            const char *e = strchr(p, '\n');
+            size_t n = e ? (size_t)(e - p) : strlen(p);
+            char *line = strndup(p, n);
+            lineno++;
+            int failed;
+            char *out = am_run(line, &failed);
+            if (failed) { fprintf(stderr, "amath: library %s line %d: %s\n", am_lib_names[i], lineno, out); exit(2); }
+            free(out); free(line);
+            p += n + (e ? 1 : 0);
+        }
+    }
+    library_loading = 0;
 }
