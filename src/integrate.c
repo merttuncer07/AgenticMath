@@ -646,7 +646,9 @@ static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
         return r;
     }
     Value *la[4] = {F, xv, b, v_str("-")}, *lb[4] = {F, xv, a, v_str("+")};
+    am_fact_mute++;
     Value *Fb = b_limit(la, is_inf(b) ? 3 : 4), *Fa = b_limit(lb, is_inf(a) ? 3 : 4);
+    am_fact_mute--;
     if (Fb->kind == V_STR || Fa->kind == V_STR) am_fail("integrate: the antiderivative has no limit at an end of the interval");
     Value *exact = am_reevaluate(v_sub(Fb, Fa));
     am_status_clear();                                         /* the definite integral gets its own verdict */

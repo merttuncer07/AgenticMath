@@ -1,0 +1,24 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev autoconf automake libtool
+      - name: cache the engines
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: deps-${{ runner.os }}-${{ hashFiles('Makefile') }}
+      - name: engines (FLINT, msolve)
+        run: test -f deps/lib/libflint.a || make deps
+      - name: build
+        run: make
+      - name: test
+        run: make test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amath-linux-x86_64
+          path: amath

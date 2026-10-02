@@ -777,7 +777,7 @@ static void collect(void) {
 
 char *am_run(const char *line, int *failed) {
     *failed = 0;
-    am_show = 0; am_lean = 0;
+    am_show = 0; am_lean = 0; am_fact_mute = 0;
     frame = NULL; depth = 0; in_condition = 0;
     am_account_reset();
     Node *volatile tree = NULL;

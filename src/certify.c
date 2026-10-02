@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 /* Certificates that another system can check.
  *
  * cofactors(g, [h1, ..., hk]): polynomials c_i with g = c_1 h_1 + ... + c_k h_k, which shows that g = 0 follows from
@@ -12,17 +13,54 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <flint/fmpq_mat.h>
 #include <flint/fmpq_vec.h>
 
 int am_lean;
 
+/* with AMATH_LEAN_PROJECT set to a Lean project that has Mathlib, run Lean on the certificate: in a child process,
+ * the source in a memory file, nothing written to disk. 1 accepted, 0 rejected (msg filled), -1 not run */
+static int lean_check(const char *code, char *msg, size_t mlen) {
+    const char *proj = getenv("AMATH_LEAN_PROJECT");
+    if (!proj || !*proj) return -1;
+    int in = memfd_create("amath-lean", 0), out = memfd_create("amath-lean-out", 0);
+    if (in < 0 || out < 0) return -1;
+    const char *head = "import Mathlib.Tactic.LinearCombination\nimport Mathlib.Tactic.Ring\nimport Mathlib.Tactic.NormNum.Prime\n\n";
+    if (write(in, head, strlen(head)) < 0 || write(in, code, strlen(code)) < 0 || write(in, "\n", 1) < 0) { close(in); close(out); return -1; }
+    fflush(stdout);
+    pid_t pid = fork();
+    if (pid < 0) { close(in); close(out); return -1; }
+    if (pid == 0) {
+        alarm(120);
+        if (chdir(proj) != 0) _exit(127);
+        dup2(out, 1); dup2(out, 2);
+        char path[64]; snprintf(path, sizeof path, "/proc/self/fd/%d", in);
+        execlp("lake", "lake", "env", "lean", path, (char *)NULL);
+        _exit(127);
+    }
+    int st; waitpid(pid, &st, 0);
+    close(in);
+    off_t n = lseek(out, 0, SEEK_END); lseek(out, 0, SEEK_SET);
+    size_t k = (size_t)n < mlen - 1 ? (size_t)n : mlen - 1;
+    ssize_t got = read(out, msg, k); msg[got > 0 ? got : 0] = 0;
+    close(out);
+    if (WIFEXITED(st) && WEXITSTATUS(st) == 127) return -1;
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 && !strstr(msg, "error") ? 1 : 0;
+}
+
 void am_lean_fact(const char *code) {
     if (!am_lean) return;
     char *js = am_json_str(code);
     am_fact("lean", "%s", js);
     free(js);
+    char msg[2048];
+    int r = lean_check(code, msg, sizeof msg);
+    if (r == 1) am_fact("lean_checked", "true");
+    else if (r == 0) { am_fact("lean_checked", "false"); char *m = am_json_str(msg); am_fact("lean_message", "%s", m); free(m); }
 }
 
 /* the variables (plain, not function terms) of a list of values; 0 if a function term or irrational appears */

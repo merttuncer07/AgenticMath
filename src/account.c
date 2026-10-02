@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int am_json, am_show;
+int am_json, am_show, am_fact_mute;
 
 typedef struct { char *s; size_t n, cap; } Buf;
 static Buf facts, work;
@@ -97,6 +97,7 @@ void am_status(Status s, const char *fmt, ...) {
 }
 
 void am_fact(const char *key, const char *json_fmt, ...) {
+    if (am_fact_mute) return;
     Buf k = {0, 0, 0};
     put_json_str(&k, key);
     put(&k, ":", 1);

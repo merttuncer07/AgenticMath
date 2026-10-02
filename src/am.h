@@ -81,7 +81,7 @@ int am_zero_test(Value *v, char *witness, size_t wlen);   /* 1 zero, 0 not (witn
 
 /* ---- the account of a statement: status, verdict, facts, work ---- */
 typedef enum { S_NONE, S_EXACT, S_PROVED, S_CERTIFIED, S_PROBABLE, S_NUMERIC, S_UNKNOWN } Status;
-extern int am_json, am_show, am_lean;   /* show: the steps; lean: Lean 4 proofs in the facts */
+extern int am_json, am_show, am_lean, am_fact_mute;   /* fact_mute: internal steps add no facts */   /* show: the steps; lean: Lean 4 proofs in the facts */
 void am_lean_fact(const char *code);
 char *am_lean_vars(int *vars, int nv);
 void am_account_reset(void);

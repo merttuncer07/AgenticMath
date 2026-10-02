@@ -27,6 +27,14 @@ for pair in 'lean cofactors(x^3 + y^3 = 0, [x + y = 0])|linear_combination (x^2 
   n=$((n+1))
   case "$got" in *"$want"*) ;; *) echo "FAIL: $stmt: $got"; fail=$((fail+1));; esac
 done
+# with AMATH_LEAN_PROJECT (a Lean project with Mathlib), the certificates are run through Lean
+if [ -n "$AMATH_LEAN_PROJECT" ] && command -v lake >/dev/null 2>&1; then
+  for stmt in 'lean cofactors(x^3 + y^3 = 0, [x + y = 0])' 'lean factor(x^6 - 1)' 'lean (x+y)^3 == x^3 + 3*x^2*y + 3*x*y^2 + y^3' 'lean isprime(1000003)'; do
+    got=$(./amath -j -e "$stmt")
+    n=$((n+1))
+    case "$got" in *'"lean_checked":true'*) ;; *) echo "FAIL: Lean did not accept: $stmt: $got"; fail=$((fail+1));; esac
+  done
+fi
 # --mcp: initialize, list the tools, evaluate in a session that keeps definitions
 got=$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
