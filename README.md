@@ -73,8 +73,13 @@ the check went (`proved`: the derivative equals the integrand exactly; `probable
   `(2*sqrt(3)*atan((2*x - 1)/sqrt(3)) + 2*log(x + 1) - log(x^2 - x + 1))/6`;
 - linearity and constant factors; a polynomial times exp, sin, cos (repeated integration by parts) or log, atan;
 - the rules for `antiderivative` in `lib/integrate.am`, written in the language (exp, sin, cos, tan, log, atan,
-  sqrt of a linear argument; exp·sin, exp·cos, sin·cos, sin², cos²);
-- what nothing finds stays as `integrate(...)`, with status `unknown` (`integrate(exp(x^2), x)`).
+  sqrt of a linear argument; exp·sin, exp·cos, sin·cos, sin², cos²; 1/sqrt and sqrt of a quadratic; exp of a
+  quadratic through erf);
+- powers of sin and cos by substitution and power reduction; powers of log by parts;
+- substitution t = u for a function term or its argument when the integrand is g(u)·u':
+  `integrate(1/(x*log(x)), x)` → `log(log(x))`, `integrate(1/(1+exp(x)), x)` → `x - log(exp(x) + 1)`,
+  `integrate(x^3*exp(x^2), x)` → `(x^2*exp(x^2) - exp(x^2))/2`;
+- what nothing finds stays as `integrate(...)`, with status `unknown` (`integrate(sin(x)/x, x)`).
 
 Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if linear(u, x) and linear(v, x)`.
 
@@ -88,8 +93,10 @@ Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if
   `limit((1+1/x)^x, x, oo)` → exp(1), `limit(x^5*exp(-x), x, oo)` → 0, `limit(1/x, x, 0)` → does not exist.
   Comparing two exponentials (`exp(x) - exp(2x)`) needs the full Gruntz algorithm and is refused for now.
 - `integrate(f, x, a, b)`: F(b) − F(a) with limits at the ends, cross-checked against Arb's certified numerical
-  integration; proved when the antiderivative is continuous on the interval (rational without poles there, or
-  built from polynomials, exp, sin, cos). A pole of a rational integrand on the interval proves divergence. With no
+  integration; proved when the antiderivative is proved continuous on the interval: every square root, logarithm,
+  arcsine and denominator in it is shown to stay in its domain (exactly from real roots when the condition is a
+  polynomial, else by ball arithmetic on pieces). For an improper integral, continuity inside the interval and
+  the one-sided limits at the ends: `integrate(log(x)^2, x, 0, 1)` → `2  [proved]`. A pole of a rational integrand on the interval proves divergence. With no
   antiderivative, the certified decimal is the answer: `integrate(exp(x^2), x, 0, 1)` →
   `1.46265174590718160880404858686  [certified]`. `integrate(1/(x^4+1), x, 0, oo)` → `pi*sqrt(2)/4  [proved]`.
 - Powers with any exponent: `x^(1/2)` is `sqrt(x)`, `x^x` is `exp(x*log(x))`.
@@ -98,9 +105,13 @@ Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if
 - Matrices are lists of rows: `A = [[1, 2], [3, 4]]`; `A*B`, `A*v`, `A^-1`, `det`, `inverse`, `transpose`, `rref`,
   `rank`, `nullspace`, `linsolve(A, b)` (every solution, with free parameters t1, t2, ..., or `[]`), `charpoly`,
   `eigenvals`, `eigenvects`, `trace`, `identity`, `dot`, `cross`; symbolic and algebraic entries.
-- Whole numbers: `mod`, `powmod`, `invmod`, `gcd`, `lcm`, `divisors`, `nextprime`, `totient`, `crt`, `isprime`, `factor`.
-- `sum(f, k, a, b)`: term by term, or closed forms for polynomial terms (`sum(k^3, k, 1, n)` →
-  `(n^4 + 2*n^3 + n^2)/4`) and geometric terms (to `oo` when |r| < 1), checked.
+- Whole numbers: `mod`, `powmod`, `invmod`, `gcd`, `lcm`, `divisors`, `nextprime`, `totient`, `crt`, `isprime`,
+  `factor`, `fibonacci`, `lucas`, `bernoulli`, `partitions`, `binomial`, `n!`.
+- `sum(f, k, a, b)`: term by term, or closed forms, each checked: polynomial terms (`sum(k^3, k, 1, n)` →
+  `(n^4 + 2*n^3 + n^2)/4`), geometric terms (to `oo` when |r| < 1), hypergeometric terms by Gosper's algorithm
+  (`sum(k*2^k, k, 1, n)` → `2*n*2^n - 2*2^n + 2`, `sum(1/(k*(k+1)), k, 1, oo)` → 1; when it fails, that is a proof
+  that no hypergeometric closed form exists), p-series through `zeta` (`sum(1/k^2, k, 1, oo)` → `pi^2/6`).
+- `zeta(s)`: exact for even s > 0 and s ≤ 0; otherwise a term whose digits `N` certifies.
 - `dsolve(eq, y, x[, [y(0) = a, y'(0) = b]])`: linear equations with constant coefficients of any order (complex
   and repeated roots; right-hand sides by variation of parameters) and first-order linear equations; `y'`, `y''`
   for derivatives; every solution put back into the equation. `dsolve(y'' + y = 1/cos(x), y, x)` →
@@ -118,8 +129,22 @@ and the facts carry a Lean 4 proof:
       linear_combination (x^2 - x*y + y^2) * h1
 
 Also `lean factor(p)` (by ring), `lean a == b` for polynomial identities (by ring), `lean factor(n)` and
-`lean isprime(p)` (by norm_num). The proofs are generated here; Lean itself is not run. This is the service Mathlib's
+`lean isprime(p)` (by norm_num). With `AMATH_LEAN_PROJECT` set to a Lean 4 project with Mathlib, Lean checks each
+proof and the facts say `lean_checked`; otherwise the proofs are generated but not run. This is the service Mathlib's
 `polyrith` tactic used to get from an online Sage server, offline and in one file.
+
+## Solving
+- `solve(eq, x)`: polynomials with number coefficients exactly (every complex root, radicals when short, else
+  `RootOf`); symbolic coefficients by formula up to degree 2 (`solve(a*x^2 + b*x + c = 0, x)`); an equation in one
+  function term is solved for the term and inverted (exp, log, sqrt, sin, cos, tan and their inverses), periodic
+  families with integer parameters: `solve(sin(x) = 1/2, x)` → `[x = (12*n1*pi + pi)/6, x = (12*n1*pi + 5*pi)/6]`,
+  `solve(exp(x) = 5, x)` → `[x = 2*n1*pi*I + log(5)]` with the fact `real_solutions: ["x = log(5)"]`. Every
+  candidate is put back into the equation; false branches are dropped. `==` is read as `=` inside `solve`.
+- `solve([eqs], [vars])`: polynomial systems via msolve, each solution exact and checked.
+- `solve(p < q, x)` (`<=`, `>`, `>=`): rational inequalities, exactly: `solve(x^3 - x > 0, x)` → `-1 < x < 0 or x > 1`.
+- `nsolve(eq, x, a, b[, digits])`: every real root in [a, b], certified by Arb root isolation:
+  `nsolve(x*exp(x) = 1, x, -10, 10)` → `[x = 0.567143290409784]  [certified]`.
+- `apart(f, x)`: partial fractions over Q, checked by adding them back.
 
 ## Deciding equality
 `a == b` subtracts and decides: exact arithmetic for numbers; for expressions, a normal form (tan = sin/cos,
@@ -127,16 +152,18 @@ sin² + cos² = 1, sqrt(u)² = u, sqrt(D)² = D, I² = −1) that proves equalit
 point where the sides differ, found by certified evaluation, proves `false`; equality at random points gives
 `true` only with status `probable`.
 
-## Functions (v0.1)
+## Functions
 | | |
 |---|---|
 | arithmetic | exact rationals, algebraic numbers, pi, E, I; rational functions in up to 32 variables |
 | `factor(n)`, `factor(p)` | whole numbers and fractions (primes proved); polynomials in one or many variables |
 | `roots(p)`, `realroots(p)` | every root as an exact algebraic number (`sqrt(2)`, `RootOf(x^3 - x - 1, 1.32472)`) |
-| `solve(eq, x)`, `solve([eqs], [vars])` | one equation exactly; polynomial systems via msolve, each solution exact and checked by substitution |
-| `N(x, digits)` | decimals with every digit guaranteed |
+| `solve`, `nsolve`, `apart` | see Solving |
+| `N(x, digits)` | decimals with every digit guaranteed (also for `zeta(3) + pi` and other constant terms) |
 | `diff`, `gcd`, `resultant`, `discriminant`, `degree`, `subs`, `numer`, `denom`, `binomial`, `isprime` | |
-| `sqrt exp log sin cos tan atan asin acos abs re im conj floor ceil gamma` | on numbers, exactly |
+| `sqrt exp log sin cos tan atan asin acos abs re im conj floor ceil gamma erf zeta` | on numbers, exactly |
+| `sec csc cot sinh cosh tanh asinh acosh atanh`, `arcsin arccos arctan log10 log2 factorial` | defined in the prelude |
+| `simplify`, `together`, `coeff(p, x, k)`, `free(e, x)` | |
 
 ## Build
     make deps    # FLINT 3.3.1 and msolve 0.9.0, static, into deps/
