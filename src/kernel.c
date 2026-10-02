@@ -136,6 +136,56 @@ static int find_term(const char *head, Value **args, int n) {
 /* head(args) as a kernel: its generator */
 Value *am_kernel_value(const char *head, Value **args, int n) {
     { int t = find_term(head, args, n); if (t >= 0) return am_gen(t); }
+    if (!strcmp(head, "exp") && n == 1 && args[0]->kind == V_RF && fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(args[0]->rf), am_mp)) {
+        /* exp(c + n log(u) + w) = exp(c) u^n exp(w): n a whole number, exp(c) algebraic (exp(pi I) = -1) */
+        const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(args[0]->rf);
+        fmpz_t den; fmpz_init(den); fmpz_mpoly_get_fmpz(den, fmpz_mpoly_q_denref(args[0]->rf), am_mp);
+        Value *out = NULL, *rest = v_num(), *cpart = v_num();
+        fmpz_mpoly_t term; fmpz_mpoly_init(term, am_mp);
+        ulong ex[AM_MAXVARS];
+        for (slong t = 0; t < fmpz_mpoly_length(N, am_mp); t++) {
+            fmpz_mpoly_get_term(term, N, t, am_mp);
+            fmpz_mpoly_get_term_exp_ui(ex, N, t, am_mp);
+            Value *tv = v_rf(); fmpz_mpoly_set(fmpz_mpoly_q_numref(tv->rf), term, am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(tv->rf), am_mp);
+            { Value *dv = v_num(); ca_set_fmpz(dv->num, den, am_ca); tv = v_div(tv, dv); }
+            int nv = 0, lg = -1, plain = 0;
+            for (int i = 0; i < am_nvars; i++) if (ex[i]) { nv++; if (am_vars[i].head && !strcmp(am_vars[i].head, "log") && am_vars[i].nargs == 1 && ex[i] == 1) lg = i; if (!am_vars[i].kernel) plain = 1; }
+            if (nv == 1 && lg >= 0 && !am_vars[lg].numval) {           /* c log(u): u^c when c is whole */
+                fmpz_t co; fmpz_init(co); fmpz_mpoly_get_term_coeff_fmpz(co, N, t, am_mp);
+                if (fmpz_divisible(co, den)) {
+                    fmpz_divexact(co, co, den);
+                    if (fmpz_cmp_si(co, 64) <= 0 && fmpz_cmp_si(co, -64) >= 0) {
+                        Value *e = v_num(); ca_set_fmpz(e->num, co, am_ca);
+                        Value *pw = v_pow(am_vars[lg].args[0], e);
+                        out = out ? v_mul(out, pw) : pw;
+                        fmpz_clear(co);
+                        continue;
+                    }
+                }
+                fmpz_clear(co);
+            }
+            if (!plain) {                                              /* a constant term: kept apart, tried below */
+                int func = 0;
+                for (int i = 0; i < am_nvars; i++) if (ex[i] && !am_vars[i].numval) func = 1;
+                if (!func) { cpart = v_add(cpart, tv); continue; }
+            }
+            rest = v_add(rest, tv);
+        }
+        fmpz_mpoly_clear(term, am_mp); fmpz_clear(den);
+        int split_c = 0;
+        Value *cn = am_reevaluate(cpart);
+        if (cn->kind == V_NUM && ca_check_is_zero(cn->num, am_ca) != T_TRUE) {
+            Value *ec = v_num(); ca_exp(ec->num, cn->num, am_ca);
+            qqbar_t q; qqbar_init(q);
+            if (ca_get_qqbar(q, ec->num, am_ca)) { out = out ? v_mul(out, ec) : ec; split_c = 1; }
+            qqbar_clear(q);
+        }
+        if (!split_c) rest = v_add(rest, cpart);
+        if (out) {
+            if (rest->kind == V_NUM && ca_check_is_zero(rest->num, am_ca) == T_TRUE) return out;
+            return v_mul(out, am_call("exp", &rest, 1));
+        }
+    }
     if (!strcmp(head, "exp") && n == 1 && args[0]->kind == V_RF) {     /* exp((e + m) log b) = b^m b^e */
         int used[AM_MAXVARS] = {0}, lg = -1, two = 0;
         fmpz_mpoly_q_used_vars(used, args[0]->rf, am_mp);

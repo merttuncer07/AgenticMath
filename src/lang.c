@@ -748,15 +748,7 @@ static Value *eval(Node *n) {
     }
     case N_FACT: {
         Value *a = eval(n->a[0]);
-        fmpq_t q; fmpq_init(q);
-        if (!v_is_rational(a, q) || !fmpz_is_one(fmpq_denref(q)) || fmpz_sgn(fmpq_numref(q)) < 0) am_fail("n! needs a whole number n >= 0");
-        if (fmpz_cmp_ui(fmpq_numref(q), 1000000) > 0) am_fail("n! for n above 10^6: too large");
-        Value *r = v_num();
-        fmpz_t f; fmpz_init(f);
-        fmpz_fac_ui(f, fmpz_get_ui(fmpq_numref(q)));
-        ca_set_fmpz(r->num, f, am_ca);
-        fmpz_clear(f); fmpq_clear(q);
-        return r;
+        return am_call("factorial", &a, 1);
     }
     case N_BIN: {
         Value *a = eval(n->a[0]), *b = eval(n->a[1]);

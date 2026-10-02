@@ -1117,6 +1117,49 @@ static Value *b_apart(Value **a, int n) {
     return res;
 }
 
+/* factorial(n) = n!: exact for whole numbers, gamma(n + 1) for other numbers; for an expression a function term,
+   with (u + m)! = (u + 1)...(u + m) u! taken out for whole m, so that k! and (k + 1)! are related */
+static Value *b_factorial(Value **a, int n) {
+    need(n, 1, 1, "factorial");
+    Value *u = a[0];
+    fmpz_t z; fmpz_init(z);
+    if (get_fmpz(u, z)) {
+        if (fmpz_sgn(z) < 0) { fmpz_clear(z); am_fail("n! is undefined for a negative whole number n"); }
+        if (fmpz_cmp_ui(z, 1000000) > 0) { fmpz_clear(z); am_fail("n! for n above 10^6: too large"); }
+        Value *r = v_num(); fmpz_t f; fmpz_init(f); fmpz_fac_ui(f, fmpz_get_ui(z)); ca_set_fmpz(r->num, f, am_ca);
+        fmpz_clear(f); fmpz_clear(z);
+        return r;
+    }
+    fmpz_clear(z);
+    if (u->kind == V_NUM) {
+        Value *r = v_num(); ca_add_ui(r->num, u->num, 1, am_ca); ca_gamma(r->num, r->num, am_ca);
+        if (ca_is_special(r->num, am_ca)) am_fail("n! is undefined here");
+        return r;
+    }
+    if (u->kind == V_RF && fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(u->rf), am_mp)) {
+        ulong zero[AM_MAXVARS] = {0};
+        fmpz_t c, d; fmpz_init(c); fmpz_init(d);
+        fmpz_mpoly_get_coeff_fmpz_ui(c, fmpz_mpoly_q_numref(u->rf), zero, am_mp);
+        fmpz_mpoly_get_coeff_fmpz_ui(d, fmpz_mpoly_q_denref(u->rf), zero, am_mp);
+        fmpz_fdiv_q(c, c, d);
+        Value *cv0 = v_num(); ca_set_fmpz(cv0->num, c, am_ca);
+        if (!fmpz_is_zero(c) && fmpz_cmp_si(c, 1000) <= 0 && fmpz_cmp_si(c, -1000) >= 0 && am_lead_sign(v_sub(u, cv0)) > 0) {
+            slong m = fmpz_get_si(c);
+            fmpz_clear(c); fmpz_clear(d);
+            Value *mv = v_num(); ca_set_si(mv->num, m, am_ca);
+            Value *base = v_sub(u, mv), *f = am_kernel_value("factorial", &base, 1);
+            for (slong i = 1; i <= (m > 0 ? m : -m); i++) {
+                Value *iv = v_num(); ca_set_si(iv->num, m > 0 ? i : -(i - 1), am_ca);
+                Value *t = v_add(base, iv);
+                f = m > 0 ? v_mul(f, t) : v_div(f, t);           /* (u+m)! = (u+1)..(u+m) u!;  (u-m)! = u!/(u (u-1) .. (u-m+1)) */
+            }
+            return f;
+        }
+        fmpz_clear(c); fmpz_clear(d);
+    }
+    return am_kernel_value("factorial", a, 1);
+}
+
 /* Si(u), the sine integral: Si(0) = 0, otherwise a term (N gives its digits) */
 static Value *b_Si(Value **a, int n) {
     need(n, 1, 1, "Si");
@@ -1244,6 +1287,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"sin", b_sin, "sin(x)", "sine"}, {"cos", b_cos, "cos(x)", "cosine"}, {"tan", b_tan, "tan(x)", "tangent"},
     {"atan", b_atan, "atan(x)", "arctangent"}, {"asin", b_asin, "asin(x)", "arcsine"}, {"acos", b_acos, "acos(x)", "arccosine"},
     {"erf", b_erf, "erf(x)", "the error function"},
+    {"factorial", b_factorial, "factorial(n)", "n!: exact for whole numbers, gamma(n + 1) for other numbers, a function term otherwise (also written n!)"},
     {"Si", b_Si, "Si(x)", "the sine integral, the integral of sin(t)/t from 0 to x"},
     {"zeta", b_zeta, "zeta(s)", "the Riemann zeta function: exact for even s > 0 and s <= 0, certified digits by N otherwise"},
     {"abs", b_abs, "abs(x)", "absolute value of a number"}, {"re", b_re, "re(x)", "real part"}, {"im", b_im, "im(x)", "imaginary part"},

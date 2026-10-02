@@ -32,6 +32,5 @@ diff(Si(u), x) := sin(u)/u*diff(u, x)
 arcsin(u) := asin(u)
 arccos(u) := acos(u)
 arctan(u) := atan(u)
-factorial(n) := n!
 log10(u) := log(u)/log(10)
 log2(u) := log(u)/log(2)

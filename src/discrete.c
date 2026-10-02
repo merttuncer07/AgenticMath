@@ -14,6 +14,8 @@
 
 #include <flint/fmpz_factor.h>
 #include <flint/fmpq_mat.h>
+#include <flint/fmpz_mpoly_factor.h>
+#include <flint/qqbar.h>
 #include <flint/fmpz_poly_factor.h>
 #include <flint/arith.h>
 
@@ -432,6 +434,146 @@ static int poles_clear(Value *R, int k, Value *lo) {
     return ok;
 }
 
+/* ---------------- known hypergeometric series to infinity ----------------
+ * t(k + 1)/t(k) = c (k + a_1)...(k + a_p)/((k + b_1)...(k + b_q)) with rational a_i, b_j and c free of k:
+ *   b = {1}: exp(c);  a = {s}, b = {1}: (1 - c)^(-s);  a = {1}, b = {2}: -log(1 - c)/c;
+ *   a = {1/2}, b = {3/2}: atanh(sqrt(c))/sqrt(c) (atan for c < 0);  b = {1/2, 1}: cosh(2 sqrt(c));
+ *   b = {3/2, 1}: sinh(2 sqrt(c))/(2 sqrt(c))   (cos and sin when -c is a square) */
+
+/* the linear factors k + r of p (other factors free of k go into *c); 0 when p has another kind of factor */
+static int linear_roots(const fmpz_mpoly_t p, int k, fmpq *roots, int *nr, Value **c) {
+    fmpz_mpoly_factor_t F; fmpz_mpoly_factor_init(F, am_mp);
+    if (!fmpz_mpoly_factor(F, p, am_mp)) { fmpz_mpoly_factor_clear(F, am_mp); return 0; }
+    Value *cc = v_num(); ca_set_fmpz(cc->num, F->constant, am_ca);
+    int ok = 1;
+    for (slong i = 0; i < F->num && ok; i++) {
+        const fmpz_mpoly_struct *f = F->poly + i;
+        slong d = fmpz_mpoly_degree_si(f, k, am_mp);
+        Value *fv = v_rf(); fmpz_mpoly_set(fmpz_mpoly_q_numref(fv->rf), f, am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(fv->rf), am_mp);
+        Value *ev = v_num(); fmpz_t e; fmpz_init(e); fmpz_set(e, F->exp + i); ca_set_fmpz(ev->num, e, am_ca); fmpz_clear(e);
+        if (d == 0) { cc = v_mul(cc, v_pow(fv, ev)); continue; }
+        if (d != 1 || fmpz_mpoly_length(f, am_mp) > 2) { ok = 0; break; }
+        /* alpha k + beta with integer alpha, beta */
+        fmpz_t al, be; fmpz_init(al); fmpz_init(be);
+        ulong ex[AM_MAXVARS] = {0};
+        fmpz_mpoly_get_coeff_fmpz_ui(be, f, ex, am_mp);
+        ex[k] = 1; fmpz_mpoly_get_coeff_fmpz_ui(al, f, ex, am_mp);
+        int only_k = fmpz_mpoly_length(f, am_mp) == (fmpz_is_zero(be) ? 1 : 2);
+        if (!only_k || fmpz_is_zero(al) || fmpz_cmp_ui(F->exp + i, 8) > 0) { fmpz_clear(al); fmpz_clear(be); ok = 0; break; }
+        for (ulong m = 0; m < fmpz_get_ui(F->exp + i); m++) {
+            if (*nr >= 8) { ok = 0; break; }
+            fmpq_set_fmpz_frac(roots + (*nr)++, be, al);
+            Value *av = v_num(); ca_set_fmpz(av->num, al, am_ca);
+            cc = v_mul(cc, av);
+        }
+        fmpz_clear(al); fmpz_clear(be);
+    }
+    fmpz_mpoly_factor_clear(F, am_mp);
+    *c = cc;
+    return ok;
+}
+
+static int qeq(const fmpq_t q, slong n, slong d) { fmpq_t t; fmpq_init(t); fmpq_set_si(t, n, (ulong)d); int r = fmpq_equal(q, t); fmpq_clear(t); return r; }
+
+/* an exact square root of a rational function (up to sign), or NULL */
+static Value *exact_sqrt(Value *v) {
+    if (v->kind == V_NUM) {
+        Value *r = v_num(); ca_sqrt(r->num, v->num, am_ca);
+        qqbar_t q; qqbar_init(q); int rat = ca_get_qqbar(q, r->num, am_ca) && qqbar_degree(q) == 1; qqbar_clear(q);
+        return rat ? r : NULL;
+    }
+    if (v->kind != V_RF) return NULL;
+    fmpz_mpoly_t n, d; fmpz_mpoly_init(n, am_mp); fmpz_mpoly_init(d, am_mp);
+    Value *r = NULL;
+    if (fmpz_mpoly_sqrt(n, fmpz_mpoly_q_numref(v->rf), am_mp) && fmpz_mpoly_sqrt(d, fmpz_mpoly_q_denref(v->rf), am_mp)) {
+        Value *nv = v_rf(), *dv = v_rf();
+        fmpz_mpoly_set(fmpz_mpoly_q_numref(nv->rf), n, am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(nv->rf), am_mp);
+        fmpz_mpoly_set(fmpz_mpoly_q_numref(dv->rf), d, am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(dv->rf), am_mp);
+        r = v_div(nv, dv);
+    }
+    fmpz_mpoly_clear(n, am_mp); fmpz_mpoly_clear(d, am_mp);
+    return r;
+}
+
+static const char *series_condition;                         /* "|x| < 1" when the ratio is symbolic */
+static int abs_lt_one(Value *c) {                            /* 1 |c| < 1 (or c symbolic: then a condition), 0 otherwise */
+    c = am_reevaluate(c);
+    if (c->kind != V_NUM) {
+        static char buf[512];
+        char *cs = v_str_of(c);
+        snprintf(buf, sizeof buf, "|%s| < 1", cs);
+        free(cs);
+        series_condition = buf;
+        return 1;
+    }
+    Value *a = v_num(); ca_abs(a->num, c->num, am_ca);
+    return ca_check_lt(a->num, num_si(1)->num, am_ca) == T_TRUE;
+}
+static int is_minus_one(Value *c) { c = am_reevaluate(c); return c->kind == V_NUM && ca_check_equal(c->num, num_si(-1)->num, am_ca) == T_TRUE; }
+
+static Value *known_series(Value *f, int k, Value *lo, Value *ratio, const char **name) {
+    ratio = am_normal_form(ratio);
+    if (ratio->kind != V_RF) return NULL;
+    fmpq a[8], b[8]; int na = 0, nb = 0;
+    for (int i = 0; i < 8; i++) { fmpq_init(a + i); fmpq_init(b + i); }
+    Value *ca, *cb, *res = NULL;
+    if (!linear_roots(fmpz_mpoly_q_numref(ratio->rf), k, a, &na, &ca) || !linear_roots(fmpz_mpoly_q_denref(ratio->rf), k, b, &nb, &cb)) goto done;
+    {
+        Value *c = v_div(ca, cb);
+        if (!am_free_of(c, k)) goto done;
+        fmpq_t L; fmpq_init(L);
+        if (!v_is_rational(lo, L) || !fmpz_is_one(fmpq_denref(L))) { fmpq_clear(L); goto done; }
+        for (int i = 0; i < na; i++) fmpq_add(a + i, a + i, L);   /* the sum from k = 0: k -> k + lo */
+        for (int i = 0; i < nb; i++) fmpq_add(b + i, b + i, L);
+        fmpq_clear(L);
+        /* cancel equal roots above and below */
+        for (int i = 0; i < na; i++) for (int j = 0; j < nb; j++) if (fmpq_equal(a + i, b + j)) {
+            fmpq_set(a + i, a + na - 1); fmpq_set(b + j, b + nb - 1); na--; nb--; i--; break;
+        }
+        Value *t0 = am_reevaluate(subs1(f, k, lo));
+        Value *one = num_si(1);
+        if (na == 0 && nb == 1 && qeq(b, 1, 1)) { res = v_mul(t0, am_call("exp", &c, 1)); *name = "exp"; }
+        else if (na == 1 && nb == 1 && qeq(b, 1, 1) && abs_lt_one(c)) {
+            Value *s0 = v_num(); ca_set_fmpq(s0->num, a, am_ca);
+            res = v_mul(t0, v_pow(v_sub(one, c), v_neg(s0))); *name = "binomial series";
+        } else if (na == 1 && nb == 1 && qeq(a, 1, 1) && qeq(b, 2, 1) && (abs_lt_one(c) || is_minus_one(c))) {
+            Value *u = v_sub(one, c);
+            res = v_mul(t0, v_div(v_neg(am_call("log", &u, 1)), c)); *name = "-log(1 - c)/c";
+        } else if (na == 1 && nb == 1 && qeq(a, 1, 2) && qeq(b, 3, 2) && (abs_lt_one(c) || is_minus_one(c))) {
+            Value *mc = v_neg(c), *w = exact_sqrt(mc);
+            Value *cr = am_reevaluate(c);
+            if (cr->kind == V_NUM && ca_check_is_real(cr->num, am_ca) == T_TRUE && ca_check_lt(cr->num, v_num()->num, am_ca) == T_TRUE) {
+                Value *sq = w ? w : am_call("sqrt", &mc, 1);
+                res = v_mul(t0, v_div(am_call("atan", &sq, 1), sq)); *name = "atan";
+            } else {
+                Value *sq = exact_sqrt(c); if (!sq) sq = am_call("sqrt", &c, 1);
+                Value *q = v_div(v_add(one, sq), v_sub(one, sq));
+                res = v_mul(t0, v_div(am_call("log", &q, 1), v_mul(num_si(2), sq))); *name = "atanh";
+            }
+        } else if (na == 0 && nb == 2 && ((qeq(b, 1, 2) && qeq(b + 1, 1, 1)) || (qeq(b, 1, 1) && qeq(b + 1, 1, 2)))) {
+            Value *w = exact_sqrt(v_mul(num_si(-4), c));       /* c = -w^2/4: cos(w) */
+            if (w) { res = v_mul(t0, am_call("cos", &w, 1)); *name = "cos"; }
+            else {
+                Value *w2 = exact_sqrt(v_mul(num_si(4), c));
+                if (w2) { Value *mw = v_neg(w2); res = v_mul(t0, v_div(v_add(am_call("exp", &w2, 1), am_call("exp", &mw, 1)), num_si(2))); *name = "cosh"; }
+            }
+        } else if (na == 0 && nb == 2 && ((qeq(b, 3, 2) && qeq(b + 1, 1, 1)) || (qeq(b, 1, 1) && qeq(b + 1, 3, 2)))) {
+            Value *w = exact_sqrt(v_mul(num_si(-4), c));
+            if (w) { res = v_mul(t0, v_div(am_call("sin", &w, 1), w)); *name = "sin(w)/w"; }
+            else {
+                Value *w2 = exact_sqrt(v_mul(num_si(4), c));
+                if (w2) { Value *mw = v_neg(w2); res = v_mul(t0, v_div(v_sub(am_call("exp", &w2, 1), am_call("exp", &mw, 1)), v_mul(num_si(2), w2))); *name = "sinh(w)/w"; }
+            }
+        }
+    }
+done:
+    for (int i = 0; i < 8; i++) { fmpq_clear(a + i); fmpq_clear(b + i); }
+    return res;
+}
+
+typedef struct { Value *f; int k; Value *v; } SubsArg;
+static Value *subs_try(void *p) { SubsArg *a = p; return am_reevaluate(subs1(a->f, a->k, a->v)); }
+
 static int is_inf_val(Value *v) { return v->kind == V_NUM && ca_is_special(v->num, am_ca); }
 
 static Value *b_sum(Value **a, int n) {
@@ -445,6 +587,20 @@ static Value *b_sum(Value **a, int n) {
     int k = am_gen_of(a[1]);
     if (k < 0 || am_vars[k].kernel) am_fail("sum: the second argument must be the index variable");
     Value *f = a[0], *lo = a[2], *hi = a[3];
+    if (f->kind == V_RF) {                                     /* binomial(u, v) as factorials: term ratios become rational */
+        int used[AM_MAXVARS] = {0}, any = 0, n0 = am_nvars;
+        fmpz_mpoly_q_used_vars(used, f->rf, am_mp);
+        Value *val[AM_MAXVARS];
+        for (int i = 0; i < n0; i++) {
+            val[i] = am_gen(i);
+            if (used[i] && am_vars[i].head && !strcmp(am_vars[i].head, "binomial") && am_vars[i].nargs == 2 && !am_free_of(am_gen(i), k)) {
+                Value *u = am_vars[i].args[0], *v = am_vars[i].args[1], *w = v_sub(u, v);
+                val[i] = v_div(am_call("factorial", &u, 1), v_mul(am_call("factorial", &v, 1), am_call("factorial", &w, 1)));
+                any = 1;
+            }
+        }
+        if (any) f = am_subs_rf(f, val);
+    }
     fmpz_t A, B; fmpz_init(A); fmpz_init(B);
     if (whole(lo, A) && whole(hi, B)) {                         /* term by term */
         fmpz_t cnt; fmpz_init(cnt); fmpz_sub(cnt, B, A);
@@ -503,7 +659,14 @@ static Value *b_sum(Value **a, int n) {
         Value *fa = subs1(f, k, lo);
         if (infinite) {
             Value *ar = am_reevaluate(ratio);
-            if (ar->kind != V_NUM) am_fail("sum: the ratio of a geometric series must be a number to decide convergence");
+            if (ar->kind != V_NUM) {                           /* a symbolic ratio: the sum, for |r| < 1 */
+                char *rs = v_str_of(ar);
+                am_status(S_PROVED, "a geometric series with ratio %s; it converges for |%s| < 1", rs, rs);
+                char cond[512]; snprintf(cond, sizeof cond, "|%s| < 1", rs);
+                char *js = am_json_str(cond); am_fact("converges_for", "%s", js); free(js); free(rs);
+                am_fact("method", "\"geometric\"");
+                return v_div(fa, v_sub(num_si(1), ar));
+            }
             Value *absr = v_num(); ca_abs(absr->num, ar->num, am_ca);
             Value *one = num_si(1);
             truth_t lt = ca_check_lt(absr->num, one->num, am_ca);
@@ -546,6 +709,33 @@ static Value *b_sum(Value **a, int n) {
             }
         }
         fmpz_clear(A0);
+    }
+    if (infinite) {
+        const char *nm = NULL;
+        series_condition = NULL;
+        Value *r0 = am_normal_form(am_reevaluate(v_div(subs1(f, k, v_add(am_gen(k), num_si(1))), f)));
+        Value *ks = known_series(f, k, lo, r0, &nm);
+        fmpz_t L0; fmpz_init(L0);
+        if (!ks && whole(lo, L0) && fmpz_sgn(L0) > 0 && fmpz_cmp_si(L0, 50) <= 0) {   /* from k = 0, less the first terms */
+            Value *zero = num_si(0), *first = num_si(0);
+            int defined = 1;
+            for (slong j = 0; j < fmpz_get_si(L0) && defined; j++) {
+                SubsArg sa = {f, k, num_si(j)};
+                Value *tj;
+                if (am_try(subs_try, &sa, &tj)) first = v_add(first, tj); else defined = 0;
+            }
+            if (defined) { ks = known_series(f, k, zero, r0, &nm); if (ks) ks = v_sub(ks, first); }
+        }
+        fmpz_clear(L0);
+        if (ks) {
+            if (series_condition) {
+                am_status(S_PROVED, "a known hypergeometric series (%s): the term ratio t(k + 1)/t(k) = %s identifies it; it converges for %s", nm, v_str_of(r0), series_condition);
+                char *js = am_json_str(series_condition); am_fact("converges_for", "%s", js); free(js);
+            } else
+            am_status(S_PROVED, "a known hypergeometric series (%s): the term ratio t(k + 1)/t(k) = %s identifies it", nm, v_str_of(r0));
+            am_fact("method", "\"known series\"");
+            return ks;
+        }
     }
     int hyper = 0;
     Value *z = gosper(f, k, ratio, &hyper);
