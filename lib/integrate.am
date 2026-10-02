@@ -22,3 +22,8 @@ antiderivative(exp(u)^n, x) := exp(u)^n/(n*diff(u, x)) if linear(u, x)
 # powers of a square root of a linear argument (n = -1 is 1/sqrt(u))
 antiderivative(sqrt(u)^n, x) := 2*sqrt(u)^(n + 2)/((n + 2)*diff(u, x)) if linear(u, x) and n != -2
 antiderivative(sqrt(u)^n, x) := log(u)/diff(u, x) if linear(u, x) and n == -2
+
+# products of sines and cosines of different linear arguments, by the product-to-sum formulas
+antiderivative(sin(u)*cos(v), x) := -cos(u + v)/(2*diff(u + v, x)) - cos(u - v)/(2*diff(u - v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0
+antiderivative(sin(u)*sin(v), x) := sin(u - v)/(2*diff(u - v, x)) - sin(u + v)/(2*diff(u + v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0
+antiderivative(cos(u)*cos(v), x) := sin(u - v)/(2*diff(u - v, x)) + sin(u + v)/(2*diff(u + v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0

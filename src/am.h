@@ -70,7 +70,10 @@ int am_gen_of(const Value *v);                     /* the generator v is exactly
 Value *am_kernel_value(const char *head, Value **args, int n);
 Value *am_number_kernel(const Value *num);
 Value *am_power_kernel(Value *base, Value *e);
-void am_collect_vars(Value **keep, int nkeep);   /* free the slots no kept value uses */
+void am_collect_vars(Value **keep, int nkeep);
+Value *am_normalize_exp(Value *v);
+int am_lead_sign(const Value *v);
+Value *am_expand_angles(Value *v);                /* one exp per term, none below the line (monomial denominators) */   /* free the slots no kept value uses */
 Value *am_number_rf(const Value *num);            /* an irrational number among variables, canonically */
 void am_reduce_squares(Value *v);                 /* sqrt(D)^2 -> D, I^2 -> -1 in a rational function */
 Value *am_normal_form(Value *v);                   /* tan as sin/cos, sin^2 + cos^2 = 1 reduced */

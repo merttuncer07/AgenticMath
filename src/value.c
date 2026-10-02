@@ -112,6 +112,7 @@ Value *v_to_rf(const Value *v) {
 /* a constant rational function as an exact number */
 static Value *rf_to_num_if_const(Value *v) {
     am_reduce_squares(v);
+    v = am_normalize_exp(v);
     fmpq_t q; fmpq_init(q);
     if (v->kind == V_RF && v_is_rational(v, q)) { Value *r = v_num(); ca_set_fmpq(r->num, q, am_ca); fmpq_clear(q); return r; }
     fmpq_clear(q);

@@ -72,6 +72,7 @@ static void lex(const char *p) {
             t->k = T_STR;
         } else if (isalpha((unsigned char)*p) || *p == '_') {
             while (isalnum((unsigned char)*p) || *p == '_') p++;
+            while (*p == '\'') p++;                              /* y', y'': derivatives in dsolve */
             t->k = T_NAME;
         } else {
             static const char *two[] = {"**", "==", "!=", "<=", ">=", ":=", NULL};
@@ -357,7 +358,7 @@ static Value *compare(const char *op, Value *a, Value *b) {
         else {
             char where[256];
             int z = am_zero_test(d, where, sizeof where);
-            if (z == 1) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference reduces to 0 (using tan = sin/cos, sin^2 + cos^2 = 1, sqrt(u)^2 = u)"); }
+            if (z == 1) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference reduces to 0 (using tan = sin/cos, multiple angles, sin^2 + cos^2 = 1, sqrt(u)^2 = u)"); }
             else if (z == 0) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the two sides differ at %s (certified evaluation)", where); }
             else if (z == 2) { t = T_TRUE; if (!in_condition) am_status(S_PROBABLE, "equal at 5 random points (certified evaluation), not proved symbolically"); }
             else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that could not be decided"); }
@@ -610,7 +611,7 @@ static Value *eval_call(Node *n) {
     }
     Value **args = calloc((size_t)(n->n ? n->n : 1), sizeof(Value *));
     for (int i = 0; i < n->n; i++) args[i] = eval(n->a[i]);
-    if (n->n == 1 && !has_rules(n->s) && !am_builtin(n->s, n->len)) {   /* x(x + 1) where x is a variable or a value */
+    if (n->n == 1 && !has_rules(n->s) && !am_builtin(n->s, n->len) && args[0]->kind == V_RF) {   /* x(x + 1): a product; y(0): a function's value */
         Value *b = lookup(n->s);
         int plain = 0;
         for (int i = 0; i < am_nvars && !b; i++) if (!am_vars[i].kernel && !strcmp(am_varnames[i], n->s)) plain = 1;

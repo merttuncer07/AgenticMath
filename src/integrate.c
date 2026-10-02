@@ -274,8 +274,102 @@ static Value *by_rules(Value *t, int x) {
     return r;
 }
 
+/* G with t replaced by v, function terms re-evaluated (log(t) becomes log(cos(u))) */
+static Value *back_subs(Value *G, int t, Value *v) {
+    Value *eq = v_list(2); eq->kind = V_EQ; eq->items[0] = am_gen(t); eq->items[1] = v;
+    Value *a[2] = {G, eq};
+    return am_call("subs", a, 2);
+}
+
+/* sin(u)^m cos(u)^n (u linear in x; m, n may be negative): t = cos(u) when m is odd, t = sin(u) when n is odd
+ * (a rational integral in t); both even and not negative: cos^2 = (1 + cos 2u)/2, sin^2 = (1 - cos 2u)/2 */
+static Value *trig_powers(Value *t, int x, int depth) {
+    if (t->kind != V_RF) return NULL;
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_q_used_vars(used, t->rf, am_mp);
+    int sv = -1, cv = -1;
+    Value *u = NULL;
+    for (int i = 0; i < am_nvars; i++) {
+        if (!used[i]) continue;
+        if (i == x) return NULL;
+        if (!am_vars[i].kernel || am_vars[i].numval || am_free_of(am_gen(i), x)) continue;
+        const char *h = am_vars[i].head;
+        if (!h || am_vars[i].nargs != 1 || (strcmp(h, "sin") && strcmp(h, "cos"))) return NULL;
+        Value *ui = am_vars[i].args[0];
+        if (u) { char *a = v_str_of(u), *b = v_str_of(ui); int same = !strcmp(a, b); free(a); free(b); if (!same) return NULL; }
+        u = ui;
+        if (h[0] == 's') sv = i; else cv = i;
+    }
+    if (!u) return NULL;
+    Value *ua[2] = {u, am_gen(x)};
+    Value *du = am_call("diff", ua, 2);
+    if (!am_free_of(du, x) || (du->kind == V_NUM && ca_check_is_zero(du->num, am_ca) == T_TRUE)) return NULL;
+    /* the exponents: t = c * s^m * c^n with c free of x, from the numerator and denominator monomials */
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(t->rf), *D = fmpz_mpoly_q_denref(t->rf);
+    if (fmpz_mpoly_length(N, am_mp) != 1 || fmpz_mpoly_length(D, am_mp) != 1) return NULL;
+    slong m = (sv >= 0 ? fmpz_mpoly_degree_si(N, sv, am_mp) - fmpz_mpoly_degree_si(D, sv, am_mp) : 0);
+    slong nn = (cv >= 0 ? fmpz_mpoly_degree_si(N, cv, am_mp) - fmpz_mpoly_degree_si(D, cv, am_mp) : 0);
+    if (m > 40 || nn > 40 || m < -40 || nn < -40) return NULL;
+    Value *S = sv >= 0 ? am_gen(sv) : NULL, *C = cv >= 0 ? am_gen(cv) : NULL;
+    Value *trigpart;
+    Value *em = v_num(); ca_set_si(em->num, m, am_ca);
+    Value *en = v_num(); ca_set_si(en->num, nn, am_ca);
+    if (S && C) trigpart = v_mul(v_pow(S, em), v_pow(C, en));
+    else trigpart = S ? v_pow(S, em) : v_pow(C, en);
+    Value *coef = v_div(t, trigpart);
+    if (!am_free_of(coef, x)) return NULL;
+    int tv = am_var_index("t_trig", 6);
+    Value *T = am_gen(tv), *one = v_num(); ca_one(one->num, am_ca);
+    Value *R = NULL;
+    if (m & 1) {                                                /* t = cos u: -1/u' int (1 - t^2)^((m-1)/2) t^n dt */
+        if (m < 0) return NULL;
+        Value *h = v_num(); ca_set_si(h->num, (m - 1) / 2, am_ca);
+        Value *g = v_mul(v_pow(v_sub(one, v_mul(T, T)), h), v_pow(T, en));
+        Value *G = integrate_any(g, tv, depth + 1);
+        R = v_neg(v_div(back_subs(G, tv, am_call("cos", &u, 1)), du));
+    } else if (nn & 1) {                                        /* t = sin u: 1/u' int t^m (1 - t^2)^((n-1)/2) dt */
+        if (nn < 0) return NULL;
+        Value *h = v_num(); ca_set_si(h->num, (nn - 1) / 2, am_ca);
+        Value *g = v_mul(v_pow(T, em), v_pow(v_sub(one, v_mul(T, T)), h));
+        Value *G = integrate_any(g, tv, depth + 1);
+        R = v_div(back_subs(G, tv, am_call("sin", &u, 1)), du);
+    } else if (m < 0 || nn < 0) {                               /* both even, one negative: t = tan u, du = dt/(1 + t^2) */
+        /* sin^m cos^n = t^m (1 + t^2)^(-(m + n)/2) */
+        slong e = -(m + nn) / 2 - 1;
+        Value *g = v_mul(v_pow(T, em), v_pow(v_add(one, v_mul(T, T)), (({ Value *ev = v_num(); ca_set_si(ev->num, e, am_ca); ev; }))));
+        Value *G = integrate_any(g, tv, depth + 1);
+        Value *back = back_subs(G, tv, am_call("tan", &u, 1));
+        /* atan(tan(u)) -> u: equal up to constants between the poles, which an antiderivative allows (checked below) */
+        if (back->kind == V_RF) {
+            int us[AM_MAXVARS] = {0}, n1 = am_nvars;
+            fmpz_mpoly_q_used_vars(us, back->rf, am_mp);
+            Value *val[AM_MAXVARS];
+            for (int i = 0; i < n1; i++) {
+                val[i] = am_gen(i);
+                if (us[i] && am_vars[i].head && !strcmp(am_vars[i].head, "atan") && am_vars[i].nargs == 1) {
+                    int g2 = am_gen_of(am_vars[i].args[0]);
+                    if (g2 >= 0 && am_vars[g2].head && !strcmp(am_vars[g2].head, "tan")) val[i] = am_vars[g2].args[0];
+                }
+            }
+            back = am_subs_rf(back, val);
+        }
+        R = v_div(back, du);
+    } else if (m >= 0 && nn >= 0 && m + nn > 0) {               /* both even: lower the powers with cos(2u) */
+        Value *two = v_num(); ca_set_si(two->num, 2, am_ca);
+        Value *u2 = v_mul(two, u), *c2 = am_call("cos", &u2, 1);
+        Value *s2h = v_div(v_sub(one, c2), two), *c2h = v_div(v_add(one, c2), two);
+        Value *hm = v_num(); ca_set_si(hm->num, m / 2, am_ca);
+        Value *hn = v_num(); ca_set_si(hn->num, nn / 2, am_ca);
+        Value *lowered = v_mul(v_pow(s2h, hm), v_pow(c2h, hn));
+        R = integrate_any(lowered, x, depth + 1);
+    } else return NULL;
+    if (R) am_work("powers of sin and cos of %s by substitution", v_str_of(u));
+    return R ? v_mul(coef, R) : NULL;
+}
+
 /* the antiderivative of a single term: c * x^k * (product of function terms) / D */
 static Value *integrate_term(Value *t, int x, int depth) {
+    { Value *r = trig_powers(t, x, depth); if (r) return r; }
     if (am_free_of(t, x)) return v_mul(t, am_gen(x));
     /* split off the factor free of x: in the numerator's single monomial and the denominator */
     fmpq_poly_t n, d; fmpq_poly_init(n); fmpq_poly_init(d);
@@ -342,10 +436,48 @@ Value *rf_den_value(const Value *t) {
     return v;
 }
 
+/* exp(u)^k below the line becomes exp(-k u) above it (multiplying by 1 = exp(u)^k exp(-k u)) */
+static Value *lift_exp(Value *f) {
+    if (f->kind != V_RF) return f;
+    const fmpz_mpoly_struct *D = fmpz_mpoly_q_denref(f->rf);
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_used_vars(used, D, am_mp);
+    int n0 = am_nvars;
+    for (int i = 0; i < n0; i++) {
+        if (!used[i] || !am_vars[i].head || strcmp(am_vars[i].head, "exp") || am_vars[i].nargs != 1) continue;
+        slong k = fmpz_mpoly_degree_si(D, i, am_mp);
+        if (k <= 0) continue;
+        Value *ek = v_num(); ca_set_si(ek->num, k, am_ca);
+        Value *nu = v_neg(v_mul(ek, am_vars[i].args[0]));
+        Value *inv = am_call("exp", &nu, 1);
+        f = v_mul(v_mul(f, v_pow(am_gen(i), ek)), inv);
+    }
+    return f;
+}
+
+/* tan(u) as sin(u)/cos(u), so that powers of sin and cos cover it */
+static Value *tan_to_sincos(Value *f) {
+    if (f->kind != V_RF) return f;
+    int used[AM_MAXVARS] = {0}, any = 0, n0 = am_nvars;
+    fmpz_mpoly_q_used_vars(used, f->rf, am_mp);
+    Value *val[AM_MAXVARS];
+    for (int i = 0; i < n0; i++) {
+        val[i] = am_gen(i);
+        if (used[i] && am_vars[i].head && !strcmp(am_vars[i].head, "tan") && am_vars[i].nargs == 1) {
+            Value *a = am_vars[i].args[0];
+            val[i] = v_div(am_call("sin", &a, 1), am_call("cos", &a, 1));
+            any = 1;
+        }
+    }
+    return any ? am_subs_rf(f, val) : f;
+}
+
 static Value *integrate_any(Value *f, int x, int depth) {
     if (depth > 50) am_fail("integrate: too deep");
     if (f->kind == V_NUM) return v_mul(f, am_gen(x));
     if (f->kind != V_RF) am_fail("integrate needs an expression");
+    f = lift_exp(tan_to_sincos(f));
+    if (f->kind == V_NUM) return v_mul(f, am_gen(x));
     fmpq_poly_t n, d; fmpq_poly_init(n); fmpq_poly_init(d);
     if (as_rational(f, x, n, d)) { Value *r = integrate_rational(n, d, x); fmpq_poly_clear(n); fmpq_poly_clear(d); return r; }
     fmpq_poly_clear(n); fmpq_poly_clear(d);
@@ -554,7 +686,7 @@ static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
 Value *b_integrate(Value **a, int n) {
     if (n == 4) {
         int g = am_gen_of(a[1]);
-        if (g < 0 || am_vars[g].kernel) am_fail("integrate: the second argument must be a variable");
+        if (g < 0 || am_vars[g].kernel) { char *s_ = v_str_of(a[1]); am_fail("integrate: the second argument must be a variable (got %s)", s_); }
         return definite(a[0], a[1], a[2], a[3]);
     }
     return indefinite(a, n);
@@ -565,7 +697,7 @@ static Value *indefinite(Value **a, int n) {
     int x = -1;
     {
         int g = am_gen_of(a[1]);
-        if (g < 0 || am_vars[g].kernel) am_fail("integrate: the second argument must be a variable");
+        if (g < 0 || am_vars[g].kernel) { char *s_ = v_str_of(a[1]); am_fail("integrate: the second argument must be a variable (got %s)", s_); }
         x = g;
     }
     Value *f = a[0];

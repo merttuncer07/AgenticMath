@@ -126,7 +126,18 @@ static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
         fmpq_t q; fmpq_init(q);
         int rat = v_is_rational(a[0], q);
         fmpq_clear(q);
-        if (!rat) return am_kernel_value(name, a, 1);       /* sin(x): a function term */
+        if (!rat) {                                         /* sin(x): a function term; sin(-u) = -sin(u), cos(-u) = cos(u) */
+            if (am_lead_sign(a[0]) < 0) {
+                int odd = !strcmp(name, "sin") || !strcmp(name, "tan") || !strcmp(name, "atan") || !strcmp(name, "asin");
+                int even = !strcmp(name, "cos");
+                if (odd || even) {
+                    Value *m = v_neg(a[0]);
+                    Value *r = am_call(name, &m, 1);
+                    return odd ? v_neg(r) : r;
+                }
+            }
+            return am_kernel_value(name, a, 1);
+        }
         a[0] = v_copy(a[0]);
         Value *t = v_num(); fmpq_t r; fmpq_init(r); v_is_rational(a[0], r); ca_set_fmpq(t->num, r, am_ca); fmpq_clear(r); a[0] = t;
     }
@@ -821,6 +832,7 @@ static Value *b_binomial(Value **a, int n) {
 
 Value *b_integrate(Value **a, int n);
 Value *b_cofactors(Value **a, int n);
+Value *b_dsolve(Value **a, int n);
 Value *b_series(Value **a, int n);
 Value *b_taylor(Value **a, int n);
 Value *b_limit(Value **a, int n);
@@ -843,6 +855,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"taylor", b_taylor, "taylor(f, x[, a[, n]])", "the terms of the series below order n, as an expression to compute with (no O term)"},
     {"limit", b_limit, "limit(f, x, a[, \"+\" | \"-\"])", "the limit at a (a number, oo or -oo), from the leading term of the series; one-sided with \"+\" or \"-\""},
     {"cofactors", b_cofactors, "cofactors(g, [h1, ..., hk])", "polynomials c_i with g = c_1 h_1 + ... + c_k h_k (so g = 0 follows from the h_i = 0), checked by expansion; with the lean prefix, a Lean 4 proof by linear_combination"},
+    {"dsolve", b_dsolve, "dsolve(eq, y, x[, [y(x0) = v0, y'(x0) = v1, ...]])", "linear ordinary differential equations: constant coefficients of any order (with a right-hand side by variation of parameters) and first order; y', y'' for derivatives; the solution is checked by substitution"},
     {"N", b_N, "N(x[, digits])", "a decimal with every digit guaranteed (default 15 digits); works on lists and equations"},
     {"diff", b_diff, "diff(f, x[, n])", "derivative (n-th) with respect to x, through sin, exp, log, f(x), ... by the chain rule"},
     {"subs", b_subs, "subs(f, x = a[, y = b]) | subs(f, [x = a, ...]) | subs(f, x, a)", "substitute values for variables; function terms are re-evaluated"},

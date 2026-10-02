@@ -282,6 +282,8 @@ static int head_is(int i, const char *h) { return am_vars[i].kernel && am_vars[i
  * rational functions. A nonzero result does not prove nonzero (sin(2x) is not reduced to sin(x)). */
 Value *am_normal_form(Value *v) {
     if (v->kind != V_RF) return v;
+    v = am_expand_angles(v);
+    if (v->kind != V_RF) return v;
     int used[AM_MAXVARS] = {0}, tans = 0;
     fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
     for (int i = 0; i < am_nvars; i++) if (used[i] && head_is(i, "tan")) tans = 1;
@@ -372,6 +374,10 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
         for (int i = 0; i < n0; i++) {                         /* function terms at that point */
             if (!am_vars[i].kernel) continue;
             if (am_vars[i].numval) { val[i] = am_vars[i].numval; continue; }
+            const char *hd = am_vars[i].head;
+            if (used[i] && hd && (!strcmp(hd, "integrate") || !strcmp(hd, "diff") || !strcmp(hd, "sum") || !strcmp(hd, "limit") || !strcmp(hd, "series")))
+                return -1;                                     /* a bound variable inside: no value at a point */
+            if (!used[i] && hd && (!strcmp(hd, "integrate") || !strcmp(hd, "diff") || !strcmp(hd, "sum") || !strcmp(hd, "limit") || !strcmp(hd, "series"))) continue;
             Value **ka = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *ka);
             for (int j = 0; j < am_vars[i].nargs; j++) ka[j] = am_reevaluate(am_subs_rf(am_vars[i].args[j], val));
             val[i] = am_call(am_vars[i].head, ka, am_vars[i].nargs);
@@ -392,7 +398,7 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
 /* base^e for a symbolic exponent: exp(e*log(base)) as a value, named base^e */
 Value *am_power_kernel(Value *base, Value *e) {
     Value *b = base;
-    Value *l = am_call("log", &b, 1);
+    Value *l = base->kind == V_NUM ? am_kernel_value("log", &b, 1) : am_call("log", &b, 1);   /* log(2) kept symbolic, so 2^x 2^x is 2^(2x) */
     Value *arg = v_mul(e, l);
     char *bs = v_str_of(base), *es = v_str_of(e);
     int bpar = bs[0] == '-' || strchr(bs, '/') || strchr(bs, ' ') || strchr(bs, '*') || strchr(bs, '^');
@@ -411,4 +417,142 @@ Value *am_power_kernel(Value *base, Value *e) {
     }
     free(name);
     return am_gen(k);
+}
+
+/* exp(u) exp(v) -> exp(u + v), exp(u)^k -> exp(k u), exp(u) below the line -> exp(-u) above: one exp per term */
+static int normalizing;
+Value *am_normalize_exp(Value *v) {
+    if (normalizing || v->kind != V_RF) return v;
+    int used[AM_MAXVARS] = {0}, nexp = 0, need = 0;
+    fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf), *Dn = fmpz_mpoly_q_denref(v->rf);
+    for (int i = 0; i < am_nvars; i++) {
+        if (!used[i] || !am_vars[i].head || strcmp(am_vars[i].head, "exp") || am_vars[i].nargs != 1) continue;
+        nexp++;
+        if (fmpz_mpoly_degree_si(Dn, i, am_mp) > 0 || fmpz_mpoly_degree_si(N, i, am_mp) > 1) need = 1;
+    }
+    if (!nexp) return v;
+    if (nexp >= 2) {                                               /* two exps in one term? */
+        ulong ex[AM_MAXVARS];
+        for (slong t = 0; t < fmpz_mpoly_length(N, am_mp) && !need; t++) {
+            fmpz_mpoly_get_term_exp_ui(ex, N, t, am_mp);
+            int c = 0;
+            for (int i = 0; i < am_nvars; i++) if (ex[i] && am_vars[i].head && !strcmp(am_vars[i].head, "exp")) c++;
+            if (c >= 2) need = 1;
+        }
+    }
+    if (!need) return v;
+    normalizing = 1;
+    /* rebuild: each term of N/Dn as coefficient * (non-exp part) * exp(sum k_i u_i - sum m_i u_i) / (Dn without exps) */
+    Value *dsum = v_num();                                         /* the exponent from the denominator's exps */
+    fmpz_mpoly_t D0; fmpz_mpoly_init(D0, am_mp);
+    fmpz_mpoly_set(D0, Dn, am_mp);
+    if (fmpz_mpoly_length(Dn, am_mp) == 1) {                       /* a monomial denominator: its exps move up */
+        ulong ex[AM_MAXVARS]; fmpz_t c; fmpz_init(c);
+        fmpz_mpoly_get_term_exp_ui(ex, Dn, 0, am_mp);
+        fmpz_mpoly_get_term_coeff_fmpz(c, Dn, 0, am_mp);
+        fmpz_mpoly_zero(D0, am_mp);
+        ulong ex0[AM_MAXVARS];
+        for (int i = 0; i < am_nvars; i++) {
+            ex0[i] = ex[i];
+            if (ex[i] && am_vars[i].head && !strcmp(am_vars[i].head, "exp") && am_vars[i].nargs == 1) {
+                Value *k = v_num(); ca_set_ui(k->num, ex[i], am_ca);
+                dsum = v_add(dsum, v_mul(k, am_vars[i].args[0]));
+                ex0[i] = 0;
+            }
+        }
+        for (int i = am_nvars; i < AM_MAXVARS; i++) ex0[i] = 0;
+        fmpz_mpoly_set_coeff_fmpz_ui(D0, c, ex0, am_mp);
+        fmpz_clear(c);
+    }
+    Value *sum = v_num();
+    ulong ex[AM_MAXVARS];
+    fmpz_t c; fmpz_init(c);
+    for (slong t = 0; t < fmpz_mpoly_length(N, am_mp); t++) {
+        fmpz_mpoly_get_term_exp_ui(ex, N, t, am_mp);
+        fmpz_mpoly_get_term_coeff_fmpz(c, N, t, am_mp);
+        Value *term = v_num(); ca_set_fmpz(term->num, c, am_ca);
+        Value *e = v_neg(dsum);
+        int any = !(dsum->kind == V_NUM && ca_check_is_zero(dsum->num, am_ca) == T_TRUE);
+        for (int i = 0; i < am_nvars; i++) {
+            if (!ex[i]) continue;
+            Value *k = v_num(); ca_set_ui(k->num, ex[i], am_ca);
+            if (am_vars[i].head && !strcmp(am_vars[i].head, "exp") && am_vars[i].nargs == 1) { e = v_add(e, v_mul(k, am_vars[i].args[0])); any = 1; }
+            else term = v_mul(term, v_pow(am_gen(i), k));
+        }
+        if (any) {
+            Value *ee = am_reevaluate(e);
+            if (!(ee->kind == V_NUM && ca_check_is_zero(ee->num, am_ca) == T_TRUE)) term = v_mul(term, am_call("exp", &ee, 1));
+        }
+        sum = v_add(sum, term);
+    }
+    fmpz_clear(c);
+    Value *den = v_rf();
+    fmpz_mpoly_set(fmpz_mpoly_q_numref(den->rf), D0, am_mp);
+    fmpz_mpoly_one(fmpz_mpoly_q_denref(den->rf), am_mp);
+    fmpz_mpoly_clear(D0, am_mp);
+    Value *r = v_div(sum, den);
+    normalizing = 0;
+    return r;
+}
+
+/* the sign of the leading coefficient of a rational function (numerator over denominator), 0 for a number */
+int am_lead_sign(const Value *v) {
+    if (v->kind != V_RF) return 0;
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf), *D = fmpz_mpoly_q_denref(v->rf);
+    if (fmpz_mpoly_length(N, am_mp) == 0) return 0;
+    fmpz_t c; fmpz_init(c);
+    fmpz_mpoly_get_term_coeff_fmpz(c, N, 0, am_mp);
+    int s = fmpz_sgn(c);
+    fmpz_mpoly_get_term_coeff_fmpz(c, D, 0, am_mp);
+    s *= fmpz_sgn(c);
+    fmpz_clear(c);
+    return s;
+}
+
+/* sin(k B), cos(k B) for an integer k in terms of s = sin(B), c = cos(B) (Chebyshev recurrences) */
+static void multiple_angle(slong k, Value *sB, Value *cB, Value **sk, Value **ck) {
+    Value *s0 = v_num(), *c0 = v_num(); ca_one(c0->num, am_ca);
+    Value *s1 = sB, *c1 = cB;
+    if (k == 0) { *sk = s0; *ck = c0; return; }
+    for (slong j = 1; j < k; j++) {                              /* s_{j+1} = s_j c + c_j s, c_{j+1} = c_j c - s_j s */
+        Value *s2 = v_add(v_mul(s1, cB), v_mul(c1, sB));
+        Value *c2 = v_sub(v_mul(c1, cB), v_mul(s1, sB));
+        s1 = s2; c1 = c2;
+    }
+    *sk = s1; *ck = c1;
+}
+
+/* every sin/cos of an integer multiple of a common angle written through sin and cos of that angle */
+Value *am_expand_angles(Value *v) {
+    if (v->kind != V_RF) return v;
+    int used[AM_MAXVARS] = {0}, n0 = am_nvars;
+    fmpz_mpoly_q_used_vars(used, v->rf, am_mp);
+    Value *val[AM_MAXVARS];
+    int changed = 0;
+    for (int i = 0; i < n0; i++) val[i] = am_gen(i);
+    for (int i = 0; i < n0; i++) {
+        if (!used[i] || !(head_is(i, "sin") || head_is(i, "cos"))) continue;
+        /* the angle A = k * B with B the smallest common angle among the sin/cos terms with the same direction */
+        Value *A = am_vars[i].args[0];
+        Value *best = NULL; fmpq_t kbest; fmpq_init(kbest);
+        for (int j = 0; j < n0; j++) {
+            if (!used[j] || !(head_is(j, "sin") || head_is(j, "cos"))) continue;
+            Value *ratio = v_div(A, am_vars[j].args[0]);
+            fmpq_t q; fmpq_init(q);
+            if (v_is_rational(ratio, q) && fmpz_is_one(fmpq_denref(q)) && fmpz_cmp_si(fmpq_numref(q), 1) > 0 && fmpz_cmp_si(fmpq_numref(q), 40) <= 0) {
+                if (!best || fmpq_cmp(q, kbest) > 0) { best = am_vars[j].args[0]; fmpq_set(kbest, q); }
+            }
+            fmpq_clear(q);
+        }
+        if (best) {
+            slong k = fmpz_get_si(fmpq_numref(kbest));
+            Value *sB = am_call("sin", &best, 1), *cB = am_call("cos", &best, 1), *sk, *ck;
+            multiple_angle(k, sB, cB, &sk, &ck);
+            val[i] = head_is(i, "sin") ? sk : ck;
+            changed = 1;
+        }
+        fmpq_clear(kbest);
+    }
+    return changed ? am_subs_rf(v, val) : v;
 }

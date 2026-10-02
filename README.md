@@ -94,6 +94,19 @@ Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if
   `1.46265174590718160880404858686  [certified]`. `integrate(1/(x^4+1), x, 0, oo)` → `pi*sqrt(2)/4  [proved]`.
 - Powers with any exponent: `x^(1/2)` is `sqrt(x)`, `x^x` is `exp(x*log(x))`.
 
+## Linear algebra, number theory, sums, differential equations
+- Matrices are lists of rows: `A = [[1, 2], [3, 4]]`; `A*B`, `A*v`, `A^-1`, `det`, `inverse`, `transpose`, `rref`,
+  `rank`, `nullspace`, `linsolve(A, b)` (every solution, with free parameters t1, t2, ..., or `[]`), `charpoly`,
+  `eigenvals`, `eigenvects`, `trace`, `identity`, `dot`, `cross`; symbolic and algebraic entries.
+- Whole numbers: `mod`, `powmod`, `invmod`, `gcd`, `lcm`, `divisors`, `nextprime`, `totient`, `crt`, `isprime`, `factor`.
+- `sum(f, k, a, b)`: term by term, or closed forms for polynomial terms (`sum(k^3, k, 1, n)` →
+  `(n^4 + 2*n^3 + n^2)/4`) and geometric terms (to `oo` when |r| < 1), checked.
+- `dsolve(eq, y, x[, [y(0) = a, y'(0) = b]])`: linear equations with constant coefficients of any order (complex
+  and repeated roots; right-hand sides by variation of parameters) and first-order linear equations; `y'`, `y''`
+  for derivatives; every solution put back into the equation. `dsolve(y'' + y = 1/cos(x), y, x)` →
+  `y = x*sin(x) + cos(x)*log(cos(x)) + cos(x)*C1 + sin(x)*C2  [proved]`.
+- Exponentials combine (`exp(x)*exp(-x)` is 1), `sin(-x)` is `-sin(x)`, and checks expand multiple angles.
+
 ## Certificates for Lean
 `cofactors(g, [h1, ..., hk])` finds polynomials c_i with g = c₁h₁ + … + c_kh_k (so g = 0 follows from the
 hypotheses), by linear algebra on the coefficients, and checks them by expansion. Prefix any statement with `lean`
