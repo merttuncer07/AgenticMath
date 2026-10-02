@@ -401,10 +401,11 @@ static Value *integrate_term(Value *t, int x, int depth) {
                 return v_mul(cons, r);
             }
             /* polynomial in x times one function term with exponent 1: by parts */
-            if (nker == 1 && ex[kv] == 1 && am_vars[kv].head) {
+            if (nker == 1 && am_vars[kv].head && (ex[kv] == 1 || !strcmp(am_vars[kv].head, "log"))) {
                 slong k = (slong)ex[x];
                 const char *h = am_vars[kv].head;
                 Value *K = am_gen(kv);
+                if (ex[kv] > 1) { Value *em = v_num(); ca_set_ui(em->num, ex[kv], am_ca); K = v_pow(K, em); }
                 if (k > 0 && (!strcmp(h, "exp") || !strcmp(h, "sin") || !strcmp(h, "cos"))) {
                     Value *I = by_rules(K, x);                  /* int x^k K = x^k I - k int x^(k-1) I, I = int K */
                     if (!unevaluated(I)) {
@@ -592,7 +593,7 @@ static int entire(Value *F, int x) {
     for (int i = 0; i < am_nvars; i++) {
         if (!used[i] || !am_vars[i].kernel || am_vars[i].numval || am_free_of(am_gen(i), x)) continue;
         const char *h = am_vars[i].head;
-        if (!h || (strcmp(h, "exp") && strcmp(h, "sin") && strcmp(h, "cos")) || !entire(am_vars[i].args[0], x)) return 0;
+        if (!h || (strcmp(h, "exp") && strcmp(h, "sin") && strcmp(h, "cos") && strcmp(h, "erf")) || !entire(am_vars[i].args[0], x)) return 0;
     }
     return 1;
 }

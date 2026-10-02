@@ -27,3 +27,12 @@ antiderivative(sqrt(u)^n, x) := log(u)/diff(u, x) if linear(u, x) and n == -2
 antiderivative(sin(u)*cos(v), x) := -cos(u + v)/(2*diff(u + v, x)) - cos(u - v)/(2*diff(u - v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0
 antiderivative(sin(u)*sin(v), x) := sin(u - v)/(2*diff(u - v, x)) - sin(u + v)/(2*diff(u + v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0
 antiderivative(cos(u)*cos(v), x) := sin(u - v)/(2*diff(u - v, x)) + sin(u + v)/(2*diff(u + v, x)) if linear(u, x) and linear(v, x) and diff(u - v, x) != 0 and diff(u + v, x) != 0
+
+# square roots of quadratics: a = coeff(u, x, 2), b = coeff(u, x, 1), c = coeff(u, x, 0)
+quadratic(u, x) := degree(u, x) == 2 and free(diff(u, x, 2), x)
+antiderivative(sqrt(u)^n, x) := -asin((2*coeff(u, x, 2)*x + coeff(u, x, 1))/sqrt(coeff(u, x, 1)^2 - 4*coeff(u, x, 2)*coeff(u, x, 0)))/sqrt(-coeff(u, x, 2)) if n == -1 and quadratic(u, x) and coeff(u, x, 2) < 0
+antiderivative(sqrt(u)^n, x) := log(2*sqrt(coeff(u, x, 2))*sqrt(u) + 2*coeff(u, x, 2)*x + coeff(u, x, 1))/sqrt(coeff(u, x, 2)) if n == -1 and quadratic(u, x) and coeff(u, x, 2) > 0
+antiderivative(sqrt(u), x) := (2*coeff(u, x, 2)*x + coeff(u, x, 1))*sqrt(u)/(4*coeff(u, x, 2)) + (4*coeff(u, x, 2)*coeff(u, x, 0) - coeff(u, x, 1)^2)/(8*coeff(u, x, 2))*antiderivative(sqrt(u)^(-1), x) if quadratic(u, x)
+
+# exp of a quadratic with a negative leading coefficient: the error function
+antiderivative(exp(u), x) := sqrt(pi)*exp(coeff(u, x, 0) - coeff(u, x, 1)^2/(4*coeff(u, x, 2)))*erf(sqrt(-coeff(u, x, 2))*x - coeff(u, x, 1)/(2*sqrt(-coeff(u, x, 2))))/(2*sqrt(-coeff(u, x, 2))) if quadratic(u, x) and coeff(u, x, 2) < 0

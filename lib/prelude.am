@@ -14,3 +14,15 @@ diff(acos(u), x) := -diff(u, x)/sqrt(1 - u^2)
 
 # simplifications that hold for every complex argument
 exp(log(u)) := u
+
+# more functions, defined through the basic ones
+sec(u) := 1/cos(u)
+csc(u) := 1/sin(u)
+cot(u) := cos(u)/sin(u)
+sinh(u) := (exp(u) - exp(-u))/2
+cosh(u) := (exp(u) + exp(-u))/2
+tanh(u) := (exp(u) - exp(-u))/(exp(u) + exp(-u))
+asinh(u) := log(u + sqrt(u^2 + 1))
+acosh(u) := log(u + sqrt(u^2 - 1))
+atanh(u) := log((1 + u)/(1 - u))/2
+diff(erf(u), x) := 2*exp(-u^2)/sqrt(pi)*diff(u, x)

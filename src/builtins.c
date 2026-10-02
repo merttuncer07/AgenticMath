@@ -164,6 +164,7 @@ CAFN(conj, ca_conj)
 CAFN(floor, ca_floor)
 CAFN(ceil, ca_ceil)
 CAFN(gamma, ca_gamma)
+CAFN(erf, ca_erf)
 
 /* N(x, digits): a decimal with every digit guaranteed (ball arithmetic) */
 static Value *b_N(Value **a, int n) {
@@ -369,6 +370,34 @@ static Value *b_factor(Value **a, int n) {
 }
 
 static Value *b_expand(Value **a, int n) { need(n, 1, 1, "expand"); return a[0]; }
+
+static Value *b_simplify(Value **a, int n) {
+    Value *m = map1(b_simplify, a, n); if (m) return m;
+    need(n, 1, 1, "simplify");
+    Value *v = am_reevaluate(a[0]);
+    Value *nf = am_normal_form(v);
+    char *s1 = v_str_of(v), *s2 = v_str_of(nf);
+    Value *r = strlen(s2) < strlen(s1) ? nf : v;
+    free(s1); free(s2);
+    return r;
+}
+
+/* coeff(p, x, k): the coefficient of x^k in p (a polynomial in x; the coefficient may involve other symbols) */
+static Value *b_coeff(Value **a, int n) {
+    need(n, 3, 3, "coeff");
+    int x = var_of(a[1]);
+    slong k = get_si(a[2], "the power");
+    if (k < 0) return v_num();
+    Value *p = a[0];
+    if (p->kind == V_NUM) return k == 0 ? p : v_num();
+    if (p->kind != V_RF || !am_free_of(rf_from_mpoly(fmpz_mpoly_q_denref(p->rf)), x)) am_fail("coeff: a polynomial in %s", am_varnames[x]);
+    fmpz_mpoly_t c; fmpz_mpoly_init(c, am_mp);
+    slong vars[1] = {x}; ulong exps[1] = {(ulong)k};
+    fmpz_mpoly_get_coeff_vars_ui(c, fmpz_mpoly_q_numref(p->rf), vars, exps, 1, am_mp);
+    Value *r = v_div(rf_from_mpoly(c), rf_from_mpoly(fmpz_mpoly_q_denref(p->rf)));
+    fmpz_mpoly_clear(c, am_mp);
+    return r;
+}
 
 static Value *b_numer(Value **a, int n) {
     need(n, 1, 1, "numer");
@@ -862,9 +891,10 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"gcd", b_gcd, "gcd(a, b, ...)", "greatest common divisor of whole numbers or polynomials"},
     {"resultant", b_resultant, "resultant(p, q, x)", "resultant of two polynomials with respect to x"},
     {"discriminant", b_discriminant, "discriminant(p[, x])", "discriminant of a polynomial with respect to x"},
+    {"coeff", b_coeff, "coeff(p, x, k)", "the coefficient of x^k in the polynomial p"},
     {"degree", b_degree, "degree(p[, x])", "total degree, or the degree in x"},
     {"expand", b_expand, "expand(e)", "the expanded form (every polynomial result is already expanded)"},
-    {"simplify", b_expand, "simplify(e)", "a canonical form: rational functions are reduced to lowest terms automatically"},
+    {"simplify", b_simplify, "simplify(e)", "a shorter equal form: lowest terms, exponentials combined, trigonometric identities (sin^2 + cos^2 = 1, multiple angles) and sqrt(u)^2 = u applied when they shorten it"},
     {"numer", b_numer, "numer(e)", "numerator of a rational function"},
     {"denom", b_denom, "denom(e)", "denominator of a rational function"},
     {"isprime", b_isprime, "isprime(n)", "true or false, with a proof of primality when one is found"},
@@ -874,6 +904,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"ln", b_log, "ln(x)", "the same as log"},
     {"sin", b_sin, "sin(x)", "sine"}, {"cos", b_cos, "cos(x)", "cosine"}, {"tan", b_tan, "tan(x)", "tangent"},
     {"atan", b_atan, "atan(x)", "arctangent"}, {"asin", b_asin, "asin(x)", "arcsine"}, {"acos", b_acos, "acos(x)", "arccosine"},
+    {"erf", b_erf, "erf(x)", "the error function"},
     {"abs", b_abs, "abs(x)", "absolute value of a number"}, {"re", b_re, "re(x)", "real part"}, {"im", b_im, "im(x)", "imaginary part"},
     {"conj", b_conj, "conj(x)", "complex conjugate"}, {"floor", b_floor, "floor(x)", "largest integer <= x"},
     {"ceil", b_ceil, "ceil(x)", "smallest integer >= x"}, {"gamma", b_gamma, "gamma(x)", "the gamma function"},

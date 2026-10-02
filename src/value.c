@@ -321,12 +321,13 @@ static void put_fexpr(Str *b, const fexpr_t e, int prec) {
     else if (fexpr_is_builtin_call(e, FEXPR_Where)) {        /* Where(body, Def(a_1, v_1), ...): put the values in */
         fexpr_t body, d, sym, val, t; fexpr_init(body); fexpr_init(t);
         fexpr_view_arg(a, e, 0); fexpr_set(body, a);
-        for (slong i = fexpr_nargs(e) - 1; i >= 1; i--) {
-            fexpr_view_arg(d, e, i);
-            if (!fexpr_is_builtin_call(d, FEXPR_Def) || fexpr_nargs(d) != 2) continue;
-            fexpr_view_arg(sym, d, 0); fexpr_view_arg(val, d, 1);
-            fexpr_replace(t, body, sym, val); fexpr_swap(t, body);
-        }
+        for (slong pass = 0; pass < fexpr_nargs(e); pass++)          /* definitions may refer to later ones */
+            for (slong i = fexpr_nargs(e) - 1; i >= 1; i--) {
+                fexpr_view_arg(d, e, i);
+                if (!fexpr_is_builtin_call(d, FEXPR_Def) || fexpr_nargs(d) != 2) continue;
+                fexpr_view_arg(sym, d, 0); fexpr_view_arg(val, d, 1);
+                fexpr_replace(t, body, sym, val); fexpr_swap(t, body);
+            }
         put_fexpr(b, body, prec);
         fexpr_clear(body); fexpr_clear(t);
         if (par) sput(b, ")");

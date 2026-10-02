@@ -226,6 +226,13 @@ static Ser apply(const char *h, Ser u, int x, Value *a, slong N) {
         if (r.N > N) r.N = N;
         return r;
     }
+    if (u.v < 0 && !strcmp(h, "erf")) {                       /* erf(u) -> sign(u) for a large real u, exponentially fast */
+        int sg = sign_lead(&u);
+        if (sg && ((-u.v) % 2 == 0 || cur_dir)) {
+            if ((-u.v) & 1) sg *= cur_dir;
+            return constant(num_si(sg), N + 64);
+        }
+    }
     if (u.v < 0 && (!strcmp(h, "sin") || !strcmp(h, "cos"))) {   /* bounded, oscillating, for a real growing argument */
         Value *lead = am_reevaluate(u.c[0]);
         if (lead->kind == V_NUM && ca_check_is_real(lead->num, am_ca) == T_TRUE) { Ser r = mk(0, N); r.bounded = 1; return r; }
@@ -287,6 +294,12 @@ static Ser apply(const char *h, Ser u, int x, Value *a, slong N) {
         }
     } else if (!strcmp(h, "tan")) {
         out = mul(apply("sin", u, x, a, N + 2), inv(apply("cos", u, x, a, N + 2)));
+    } else if (!strcmp(h, "erf")) {
+        Ser du = deriv(u), uu = mul(u, u);
+        Value *pi = v_num(); ca_pi(pi->num, am_ca);
+        Ser e = apply("exp", scale(uu, num_si(-1)), x, a, N + 2);
+        Ser q = scale(mul(du, e), v_div(num_si(2), call1("sqrt", pi)));
+        out = integ(q, call1("erf", c0));
     } else if (!strcmp(h, "atan") || !strcmp(h, "asin") || !strcmp(h, "acos")) {
         Ser du = deriv(u), uu = mul(u, u);
         Ser den;
@@ -517,9 +530,9 @@ Value *b_limit(Value **a, int n) {
         if (ca_check_is_pos_inf(pt->num, am_ca) == T_TRUE) at_inf = 1;
         else if (ca_check_is_neg_inf(pt->num, am_ca) == T_TRUE) at_inf = -1;
         else am_fail("limit: the point must be a number, oo or -oo");
-        /* x = 1/t (t -> 0+) or x = -1/t, function terms re-evaluated */
+        /* x = 1/t^2 (t -> 0+) or x = -1/t^2, function terms re-evaluated: half powers of x become whole */
         Value *eq = v_list(2); eq->kind = V_EQ;
-        eq->items[0] = am_gen(x); eq->items[1] = v_div(num_si(at_inf), am_gen(x));
+        eq->items[0] = am_gen(x); eq->items[1] = v_div(num_si(at_inf), v_mul(am_gen(x), am_gen(x)));
         Value *b[2] = {f, eq};
         f = am_call("subs", b, 2);
         pt = zero();

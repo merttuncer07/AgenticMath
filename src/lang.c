@@ -531,12 +531,21 @@ Value *am_call(const char *name, Value **args, int n) {
         if (ok) {
             if (++depth > 2000) { depth = 0; free(f); am_fail("%s: more than 2000 nested calls", name); }
             Frame *save = frame; frame = f;
-            if (R->cond) {
-                in_condition++;
-                Value *c = eval(R->cond);
-                in_condition--;
-                if (c->kind == V_BOOL && c->truth < 0) am_fail("the condition of the rule %s could not be decided", R->src);
-                ok = c->kind == V_BOOL && c->truth == 1;
+            if (R->cond) {                                     /* a condition that cannot be decided: the rule does not apply */
+                jmp_buf saved; memcpy(saved, am_on_error, sizeof saved);
+                int cdepth = depth;
+                Frame *cframe = frame;
+                if (setjmp(am_on_error)) {
+                    memcpy(am_on_error, saved, sizeof saved);
+                    in_condition = 0; depth = cdepth; frame = cframe;
+                    ok = 0;
+                } else {
+                    in_condition++;
+                    Value *c = eval(R->cond);
+                    in_condition--;
+                    memcpy(am_on_error, saved, sizeof saved);
+                    ok = c->kind == V_BOOL && c->truth == 1;
+                }
             }
             if (ok) {
                 if (!library_loading) am_work("%s", R->src);
