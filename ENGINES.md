@@ -47,3 +47,6 @@ comes close on speed (benchmarks on real sizes).
   illegal instruction on another. We answer the detection with `ax_cv_have_avx_os_support_ext=no
   ax_cv_have_avx512_os_support_ext=no` and pass SSE flags only (Makefile, `MSOLVE_FLAGS`). A build option for
   portable binaries would help upstream; our own Gröbner engine should dispatch at run time instead.
+- FLINT 3.3.1 build: `configure` picks x86-64 assembly for the building machine's processor model (broadwell,
+  skylake, icelake, zen3, ...); a static binary built that way stops elsewhere. We configure with
+  `--disable-assembly`.
