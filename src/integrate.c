@@ -731,6 +731,7 @@ static int entire(Value *F, int x) {
 }
 
 /* integrate(f, x, a, b) */
+int am_continuous_on(Value *F, int x, Value *a, Value *b, int open);
 static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
     int x = am_gen_of(xv);
     if (!am_free_of(a, x) || !am_free_of(b, x)) am_fail("integrate: the limits must not depend on %s", am_varnames[x]);
@@ -806,10 +807,14 @@ static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
         acb_clear(ex);
         if (rational) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, continuous on the interval (no pole there); agrees with certified numerical integration");
         else if (entire(F, x)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative built from polynomials, exp, sin and cos, hence continuous; agrees with certified numerical integration");
+        else if (am_continuous_on(F, x, a, b, 0)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, proved continuous on the interval (every square root, logarithm and denominator stays in its domain); agrees with certified numerical integration");
+        else if (am_continuous_on(F, x, a, b, 1)) am_status(S_PROVED, "the one-sided limits of a checked antiderivative at the ends, proved continuous inside the interval (an improper integral); agrees with certified numerical integration");
         else am_status(S_PROBABLE, "F(b) - F(a) for a checked antiderivative; agrees with certified numerical integration to 30 digits, its continuity on the interval is not proved");
         am_fact("numerical_check", "\"agrees to 30 digits (Arb)\"");
     } else if (rational) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, continuous on the interval (no pole there)");
     else if (entire(F, x)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative built from polynomials, exp, sin and cos, hence continuous");
+    else if (am_continuous_on(F, x, a, b, 0)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, proved continuous on the interval (every square root, logarithm and denominator stays in its domain)");
+    else if (am_continuous_on(F, x, a, b, 1)) am_status(S_PROVED, "the one-sided limits of a checked antiderivative at the ends, proved continuous inside the interval (an improper integral)");
     else {
         am_status(S_EXACT, "F(b) - F(a) for a checked antiderivative; continuity on the interval not checked (no certified numerical value)");
         am_fact("continuity_checked", "false");

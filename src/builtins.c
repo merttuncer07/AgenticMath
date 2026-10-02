@@ -123,6 +123,10 @@ static Value *map1(Value *(*f)(Value **, int), Value **a, int n) {
 /* ---------------- numbers: elementary functions (Calcium) ---------------- */
 
 typedef void (*CaFn)(ca_t, const ca_t, ca_ctx_t);
+static void mpoly_content(fmpz_t c, const fmpz_mpoly_t p) {   /* the positive gcd of the coefficients */
+    fmpz_zero(c);
+    for (slong i = 0; i < fmpz_mpoly_length(p, am_mp); i++) fmpz_gcd(c, c, p->coeffs + i);
+}
 static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
     need(n, 1, 1, name);
     if (a[0]->kind != V_NUM) {
@@ -138,6 +142,20 @@ static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
                     Value *r = am_call(name, &m, 1);
                     return odd ? v_neg(r) : r;
                 }
+            }
+            if (!strcmp(name, "sqrt") && a[0]->kind == V_RF) {  /* sqrt(c u) = sqrt(c) sqrt(u) for a positive rational c */
+                fmpz_t cn, cd; fmpz_init(cn); fmpz_init(cd);
+                mpoly_content(cn, fmpz_mpoly_q_numref(a[0]->rf));
+                mpoly_content(cd, fmpz_mpoly_q_denref(a[0]->rf));
+                int one = fmpz_is_one(cn) && fmpz_is_one(cd);
+                if (!one && !fmpz_is_zero(cn) && !fmpz_is_zero(cd)) {
+                    Value *c = v_num(); fmpq_t cq; fmpq_init(cq); fmpq_set_fmpz_frac(cq, cn, cd); ca_set_fmpq(c->num, cq, am_ca); fmpq_clear(cq);
+                    fmpz_clear(cn); fmpz_clear(cd);
+                    Value *u = v_div(a[0], c);
+                    Value *sc = v_num(); ca_sqrt(sc->num, c->num, am_ca);
+                    return v_mul(sc, am_kernel_value(name, &u, 1));
+                }
+                fmpz_clear(cn); fmpz_clear(cd);
             }
             return am_kernel_value(name, a, 1);
         }

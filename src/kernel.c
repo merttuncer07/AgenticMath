@@ -233,9 +233,30 @@ static int ext_value(ca_t res, ca_ext_ptr e) {
 }
 
 /* log(q) for a positive rational q other than a prime: the sum of e log(p) over its prime factors p^e */
+static Value *log_of_rational(const ca_t a);
+/* log(a) for a positive real algebraic a with a^k rational (k <= 6): log(a^k)/k, as prime logarithms */
+static Value *log_of_algebraic(const ca_t a) {
+    qqbar_t q, p; qqbar_init(q); qqbar_init(p);
+    Value *r = NULL;
+    if (ca_get_qqbar(q, a, am_ca) && qqbar_is_real(q) && qqbar_sgn_re(q) > 0 && qqbar_degree(q) > 1 && qqbar_degree(q) <= 6) {
+        for (ulong k = 2; k <= 6 && !r; k++) {
+            qqbar_pow_ui(p, q, k);
+            if (qqbar_degree(p) != 1) continue;
+            Value *pk = v_num(); ca_set_qqbar(pk->num, p, am_ca);
+            Value *l = log_of_rational(pk->num);
+            if (!l) { Value *lv = v_num(); ca_log(lv->num, pk->num, am_ca); l = am_number_kernel(lv); }   /* log(p), p prime */
+            Value *kv = v_num(); ca_set_ui(kv->num, k, am_ca);
+            r = v_div(l, kv);
+        }
+    }
+    qqbar_clear(q); qqbar_clear(p);
+    return r;
+}
+
 static Value *log_of_rational(const ca_t a) {
     fmpq_t q; fmpq_init(q);
-    if (!ca_get_fmpq(q, a, am_ca) || fmpq_sgn(q) <= 0 || fmpz_bits(fmpq_numref(q)) > 64 || fmpz_bits(fmpq_denref(q)) > 64) { fmpq_clear(q); return NULL; }
+    if (!ca_get_fmpq(q, a, am_ca)) { fmpq_clear(q); return log_of_algebraic(a); }
+    if (fmpq_sgn(q) <= 0 || fmpz_bits(fmpq_numref(q)) > 64 || fmpz_bits(fmpq_denref(q)) > 64) { fmpq_clear(q); return NULL; }
     fmpz_factor_t F[2]; fmpz_factor_init(F[0]); fmpz_factor_init(F[1]);
     fmpz_factor(F[0], fmpq_numref(q)); fmpz_factor(F[1], fmpq_denref(q));
     Value *r = NULL;
