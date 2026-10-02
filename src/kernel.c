@@ -136,6 +136,25 @@ static int find_term(const char *head, Value **args, int n) {
 /* head(args) as a kernel: its generator */
 Value *am_kernel_value(const char *head, Value **args, int n) {
     { int t = find_term(head, args, n); if (t >= 0) return am_gen(t); }
+    if (!strcmp(head, "exp") && n == 1 && args[0]->kind == V_RF) {     /* exp((e + m) log b) = b^m b^e */
+        int used[AM_MAXVARS] = {0}, lg = -1, two = 0;
+        fmpz_mpoly_q_used_vars(used, args[0]->rf, am_mp);
+        for (int i = 0; i < am_nvars; i++)
+            if (used[i] && am_vars[i].head && !strcmp(am_vars[i].head, "log") && am_vars[i].nargs == 1) { if (lg >= 0) two = 1; lg = i; }
+        if (lg >= 0 && !two) {
+            Value *c = v_div(args[0], am_gen(lg));
+            if (am_free_of(c, lg) && c->kind == V_RF && fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(c->rf), am_mp)) {
+                ulong zero[AM_MAXVARS] = {0};
+                fmpz_t a, d; fmpz_init(a); fmpz_init(d);
+                fmpz_mpoly_get_coeff_fmpz_ui(a, fmpz_mpoly_q_numref(c->rf), zero, am_mp);
+                fmpz_mpoly_get_coeff_fmpz_ui(d, fmpz_mpoly_q_denref(c->rf), zero, am_mp);
+                fmpz_fdiv_q(a, a, d);
+                int shift = !fmpz_is_zero(a);
+                fmpz_clear(a); fmpz_clear(d);
+                if (shift) return am_power_kernel(am_vars[lg].args[0], c);
+            }
+        }
+    }
     if (!strcmp(head, "exp") && n == 1) {
         char *pn = power_name(args[0]);
         if (pn) {
@@ -397,6 +416,19 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
 
 /* base^e for a symbolic exponent: exp(e*log(base)) as a value, named base^e */
 Value *am_power_kernel(Value *base, Value *e) {
+    if (e->kind == V_RF && fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(e->rf), am_mp)) {   /* b^(e + m) = b^m b^e, m whole */
+        ulong zero[AM_MAXVARS] = {0};
+        fmpz_t c, m; fmpz_init(c); fmpz_init(m);
+        fmpz_mpoly_get_coeff_fmpz_ui(c, fmpz_mpoly_q_numref(e->rf), zero, am_mp);
+        fmpz_mpoly_get_coeff_fmpz_ui(m, fmpz_mpoly_q_denref(e->rf), zero, am_mp);
+        fmpz_fdiv_q(m, c, m);
+        if (!fmpz_is_zero(m) && fmpz_cmp_si(m, 1000) <= 0 && fmpz_cmp_si(m, -1000) >= 0) {
+            Value *mv = v_num(); ca_set_fmpz(mv->num, m, am_ca);
+            fmpz_clear(c); fmpz_clear(m);
+            return v_mul(v_pow(base, mv), am_power_kernel(base, v_sub(e, mv)));
+        }
+        fmpz_clear(c); fmpz_clear(m);
+    }
     Value *b = base;
     Value *l = base->kind == V_NUM ? am_kernel_value("log", &b, 1) : am_call("log", &b, 1);   /* log(2) kept symbolic, so 2^x 2^x is 2^(2x) */
     Value *arg = v_mul(e, l);

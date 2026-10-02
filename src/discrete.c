@@ -4,7 +4,8 @@
  *   - f a polynomial in k: F with F(k + 1) - F(k) = f(k) by linear algebra (the discrete antiderivative), then
  *     F(b + 1) - F(a);
  *   - f geometric (f(k + 1)/f(k) = r free of k): f(a)(r^(b - a + 1) - 1)/(r - 1), and f(a)/(1 - r) to infinity when
- *     |r| < 1. */
+ *     |r| < 1;
+ *   - f hypergeometric (f(k + 1)/f(k) rational in k): Gosper's algorithm, z(b + 1) - z(a), checked. */
 #include "am.h"
 
 #include <stdio.h>
@@ -13,6 +14,7 @@
 
 #include <flint/fmpz_factor.h>
 #include <flint/fmpq_mat.h>
+#include <flint/fmpz_poly_factor.h>
 #include <flint/arith.h>
 
 static int whole(const Value *v, fmpz_t out) {
@@ -195,6 +197,168 @@ static Value *discrete_antiderivative(Value *p, int k, slong d) {
     return F;
 }
 
+/* ---------------- Gosper's algorithm ----------------
+ * For a hypergeometric term t(k) (t(k + 1)/t(k) = r(k) in Q(k)), find z(k) = R(k) t(k) with z(k + 1) - z(k) = t(k)
+ * and R rational, or show none exists. Write r(k) = a(k)/b(k) * c(k + 1)/c(k) with gcd(a(k), b(k + h)) = 1 for all
+ * h >= 0 (the shifts h come from pairs of irreducible factors), then solve a(k) x(k + 1) - b(k - 1) x(k) = c(k) for a
+ * polynomial x by linear algebra over a degree bound; R = b(k - 1) x(k)/c(k). */
+
+static void shift_poly(fmpz_poly_t out, const fmpz_poly_t p, slong s) {
+    fmpz_t c; fmpz_init_set_si(c, s); fmpz_poly_taylor_shift(out, p, c); fmpz_clear(c);
+}
+
+static int cmp_slong(const void *x, const void *y) { slong a = *(const slong *)x, b = *(const slong *)y; return (a > b) - (a < b); }
+
+/* the shifts h >= 1 with gcd(a(k), b(k + h)) != 1 */
+static slong shifts(slong *out, slong max, const fmpz_poly_t a, const fmpz_poly_t b) {
+    slong n = 0;
+    fmpz_poly_factor_t fa, fb; fmpz_poly_factor_init(fa); fmpz_poly_factor_init(fb);
+    fmpz_poly_factor(fa, a); fmpz_poly_factor(fb, b);
+    fmpq_t s, t; fmpq_init(s); fmpq_init(t);
+    fmpz_poly_t g, sh; fmpz_poly_init(g); fmpz_poly_init(sh);
+    for (slong i = 0; i < fa->num; i++) for (slong j = 0; j < fb->num; j++) {
+        const fmpz_poly_struct *f = fa->p + i, *h = fb->p + j;
+        slong d = fmpz_poly_degree(f);
+        if (d < 1 || d != fmpz_poly_degree(h)) continue;
+        /* f(k) ~ h(k + s): s = (f_{d-1}/f_d - h_{d-1}/h_d)/d */
+        fmpq_set_fmpz_frac(s, f->coeffs + d - 1, f->coeffs + d);
+        fmpq_set_fmpz_frac(t, h->coeffs + d - 1, h->coeffs + d);
+        fmpq_sub(s, s, t); { fmpz_t dz; fmpz_init_set_si(dz, d); fmpq_div_fmpz(s, s, dz); fmpz_clear(dz); }
+        if (!fmpz_is_one(fmpq_denref(s)) || fmpz_sgn(fmpq_numref(s)) <= 0 || !fmpz_fits_si(fmpq_numref(s))) continue;
+        slong hsh = fmpz_get_si(fmpq_numref(s));
+        if (hsh > 100000) continue;
+        shift_poly(sh, b, hsh); fmpz_poly_gcd(g, a, sh);
+        if (fmpz_poly_degree(g) < 1) continue;
+        int seen = 0;
+        for (slong m = 0; m < n; m++) if (out[m] == hsh) seen = 1;
+        if (!seen && n < max) out[n++] = hsh;
+    }
+    qsort(out, (size_t)n, sizeof(slong), cmp_slong);
+    fmpz_poly_clear(g); fmpz_poly_clear(sh); fmpq_clear(s); fmpq_clear(t);
+    fmpz_poly_factor_clear(fa); fmpz_poly_factor_clear(fb);
+    return n;
+}
+
+static Value *poly_value(const fmpz_poly_t p, int k, const fmpz_t den) {
+    Value *r = num_si(0), *K = am_gen(k);
+    for (slong i = fmpz_poly_degree(p); i >= 0; i--) {
+        Value *c = v_num(); fmpq_t q; fmpq_init(q);
+        fmpq_set_fmpz_frac(q, p->coeffs + i, den);
+        ca_set_fmpq(c->num, q, am_ca); fmpq_clear(q);
+        r = v_add(v_mul(r, K), c);
+    }
+    return r;
+}
+
+/* the ratio as a(k)/b(k) with integer polynomials; 0 when it is not a rational function of k alone */
+static int ratio_polys(fmpz_poly_t a, fmpz_poly_t b, Value *r, int k) {
+    if (r->kind == V_NUM) {
+        fmpq_t q; fmpq_init(q);
+        if (!ca_get_fmpq(q, r->num, am_ca)) { fmpq_clear(q); return 0; }   /* a number field ratio: not handled yet */
+        fmpz_poly_set_fmpz(a, fmpq_numref(q)); fmpz_poly_set_fmpz(b, fmpq_denref(q)); fmpq_clear(q);
+        return !fmpz_poly_is_zero(a);
+    }
+    if (r->kind != V_RF) return 0;
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_q_used_vars(used, r->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) if (used[i] && i != k) return 0;
+    return fmpz_mpoly_get_fmpz_poly(a, fmpz_mpoly_q_numref(r->rf), k, am_mp)
+        && fmpz_mpoly_get_fmpz_poly(b, fmpz_mpoly_q_denref(r->rf), k, am_mp);
+}
+
+/* z(k) with z(k + 1) - z(k) = t(k), or NULL; *hyper is set when t is hypergeometric (then NULL means none exists) */
+static Value *gosper(Value *t, int k, Value *ratio, int *hyper) {
+    *hyper = 0;
+    fmpz_poly_t a, b, c, g, sh, A, B; Value *z = NULL;
+    fmpz_poly_init(a); fmpz_poly_init(b); fmpz_poly_init(c); fmpz_poly_init(g); fmpz_poly_init(sh);
+    fmpz_poly_init(A); fmpz_poly_init(B);
+    if (!ratio_polys(a, b, ratio, k)) goto done;
+    *hyper = 1;
+    fmpz_poly_one(c);
+    slong hs[64]; slong nh = shifts(hs, 64, a, b);
+    for (slong m = 0; m < nh; m++) {
+        shift_poly(sh, b, hs[m]); fmpz_poly_gcd(g, a, sh);
+        if (fmpz_poly_degree(g) < 1) continue;
+        fmpz_poly_div(a, a, g);
+        shift_poly(sh, g, -hs[m]); fmpz_poly_div(b, b, sh);
+        for (slong i = 1; i <= hs[m]; i++) { shift_poly(sh, g, -i); fmpz_poly_mul(c, c, sh); }
+    }
+    fmpz_poly_set(A, a); shift_poly(B, b, -1);
+    slong dA = fmpz_poly_degree(A), dB = fmpz_poly_degree(B), dc = fmpz_poly_degree(c), D;
+    if (dA != dB || !fmpz_equal(A->coeffs + dA, B->coeffs + dB)) D = dc - (dA > dB ? dA : dB);
+    else {
+        D = dc - dA + 1;
+        if (dA >= 1) {
+            fmpz_t e, q, rem; fmpz_init(e); fmpz_init(q); fmpz_init(rem);
+            fmpz_sub(e, B->coeffs + dA - 1, A->coeffs + dA - 1);
+            fmpz_fdiv_qr(q, rem, e, A->coeffs + dA);
+            if (fmpz_is_zero(rem) && fmpz_cmp_si(q, D) > 0 && fmpz_cmp_si(q, 1000) <= 0) D = fmpz_get_si(q);
+            fmpz_clear(e); fmpz_clear(q); fmpz_clear(rem);
+        }
+    }
+    if (D < 0) goto done;
+    {
+        /* columns: A(k)(k + 1)^j - B(k) k^j for j = 0..D */
+        slong rows = D + 1 + (dA > dB ? dA : dB);
+        if (dc + 1 > rows) rows = dc + 1;
+        fmpq_mat_t M, R, X; fmpq_mat_init(M, rows, D + 1); fmpq_mat_init(R, rows, 1); fmpq_mat_init(X, D + 1, 1);
+        fmpz_poly_t col, kp; fmpz_poly_init(col); fmpz_poly_init(kp);
+        for (slong j = 0; j <= D; j++) {
+            fmpz_poly_zero(kp); fmpz_poly_set_coeff_si(kp, j, 1);
+            shift_poly(sh, kp, 1); fmpz_poly_mul(col, A, sh);
+            fmpz_poly_mul(sh, B, kp); fmpz_poly_sub(col, col, sh);
+            for (slong i = 0; i <= fmpz_poly_degree(col) && i < rows; i++) fmpz_set(fmpq_numref(fmpq_mat_entry(M, i, j)), col->coeffs + i);
+        }
+        for (slong i = 0; i <= dc; i++) fmpz_set(fmpq_numref(fmpq_mat_entry(R, i, 0)), c->coeffs + i);
+        if (fmpq_mat_can_solve(X, M, R)) {
+            /* x with a common denominator */
+            fmpz_t den; fmpz_init_set_ui(den, 1);
+            for (slong j = 0; j <= D; j++) fmpz_lcm(den, den, fmpq_denref(fmpq_mat_entry(X, j, 0)));
+            fmpz_poly_t x; fmpz_poly_init(x);
+            for (slong j = 0; j <= D; j++) {
+                fmpz_t v; fmpz_init(v);
+                fmpz_divexact(v, den, fmpq_denref(fmpq_mat_entry(X, j, 0)));
+                fmpz_mul(v, v, fmpq_numref(fmpq_mat_entry(X, j, 0)));
+                fmpz_poly_set_coeff_fmpz(x, j, v); fmpz_clear(v);
+            }
+            fmpz_poly_mul(x, x, B);
+            fmpz_t one; fmpz_init_set_ui(one, 1);
+            z = v_mul(v_div(poly_value(x, k, den), poly_value(c, k, one)), t);
+            fmpz_clear(one); fmpz_poly_clear(x); fmpz_clear(den);
+        }
+        fmpz_poly_clear(col); fmpz_poly_clear(kp);
+        fmpq_mat_clear(M); fmpq_mat_clear(R); fmpq_mat_clear(X);
+    }
+done:
+    fmpz_poly_clear(a); fmpz_poly_clear(b); fmpz_poly_clear(c); fmpz_poly_clear(g); fmpz_poly_clear(sh);
+    fmpz_poly_clear(A); fmpz_poly_clear(B);
+    return z;
+}
+
+/* 1 when the rational function z/t of k has no pole at a whole number >= lo */
+static int poles_clear(Value *R, int k, Value *lo) {
+    fmpz_t L; fmpz_init(L);
+    int ok = whole(lo, L);
+    if (ok && R->kind == V_RF) {
+        fmpz_poly_t d; fmpz_poly_init(d);
+        if (!fmpz_mpoly_get_fmpz_poly(d, fmpz_mpoly_q_denref(R->rf), k, am_mp)) ok = 0;
+        else {
+            fmpz_poly_factor_t f; fmpz_poly_factor_init(f); fmpz_poly_factor(f, d);
+            for (slong i = 0; i < f->num; i++) {
+                const fmpz_poly_struct *p = f->p + i;
+                if (fmpz_poly_degree(p) != 1 || !fmpz_divisible(p->coeffs, p->coeffs + 1)) continue;
+                fmpz_t r; fmpz_init(r); fmpz_divexact(r, p->coeffs, p->coeffs + 1); fmpz_neg(r, r);
+                if (fmpz_cmp(r, L) >= 0) ok = 0;
+                fmpz_clear(r);
+            }
+            fmpz_poly_factor_clear(f);
+        }
+        fmpz_poly_clear(d);
+    }
+    fmpz_clear(L);
+    return ok;
+}
+
 static int is_inf_val(Value *v) { return v->kind == V_NUM && ca_is_special(v->num, am_ca); }
 
 static Value *b_sum(Value **a, int n) {
@@ -286,7 +450,31 @@ static Value *b_sum(Value **a, int n) {
         am_fact("method", "\"geometric\"");
         return v_div(v_mul(fa, v_sub(v_pow(ratio, cnt), one)), dr);
     }
-    am_status(S_UNKNOWN, "no closed form found (polynomial and geometric terms are handled; Gosper's algorithm is not built yet)");
+    int hyper = 0;
+    Value *z = gosper(f, k, ratio, &hyper);
+    if (z) {
+        Value *K1 = v_add(am_gen(k), num_si(1));
+        Value *chk = am_normal_form(am_reevaluate(v_sub(v_sub(subs1(z, k, K1), z), f)));
+        int zt = am_zero_test(chk, NULL, 0);
+        if ((zt == 1 || zt == 2) && poles_clear(am_normal_form(v_div(z, f)), k, lo)) {
+            if (zt == 1) am_status(S_PROVED, "z(b + 1) - z(a) with z(k) = %s found by Gosper's algorithm; z(k + 1) - z(k) equals the term exactly and z has no pole in the range", v_str_of(z));
+            else am_status(S_PROBABLE, "z(b + 1) - z(a) with z(k) = %s found by Gosper's algorithm; z(k + 1) - z(k) equals the term at random points", v_str_of(z));
+            am_fact("method", "\"Gosper\"");
+            am_fact("antidifference", "\"%s\"", v_str_of(z));
+            Value *res;
+            if (infinite) {                                    /* the limit of z(N + 1) - z(a) */
+                Value *args[3] = {z, am_gen(k), hi};
+                res = v_sub(am_call("limit", args, 3), subs1(z, k, lo));
+            } else res = v_sub(subs1(z, k, v_add(hi, num_si(1))), subs1(z, k, lo));
+            res = am_normal_form(res);
+            return res;
+        }
+    }
+    if (hyper && !z) {
+        am_status(S_UNKNOWN, "no closed form: Gosper's algorithm shows the partial sums are not a hypergeometric term plus a constant");
+        am_fact("gosper_summable", "false");
+    } else
+        am_status(S_UNKNOWN, "no closed form found (polynomial, geometric and Gosper-summable hypergeometric terms are handled)");
     Value *args[4] = {f, a[1], lo, hi};
     return am_kernel_value("sum", args, 4);
 }
