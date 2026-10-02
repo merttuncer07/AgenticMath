@@ -1,0 +1,23 @@
+name: runtime-test
+on:
+  push:
+    branches: [agenticmath-runtime-test]
+
+jobs:
+  runtime-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: tools
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev libmpfr-dev autoconf automake libtool
+      - name: build engines
+        run: make deps
+      - name: build AgenticMath
+        run: make
+      - name: run tests
+        run: make test
+      - name: upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: amath-runtime-test
+          path: amath
