@@ -123,6 +123,11 @@ static Value *rf_to_num_if_const(Value *v) {
 typedef enum { OP_ADD, OP_SUB, OP_MUL, OP_DIV } Op;
 
 static Value *arith(const Value *a, const Value *b, Op op) {
+    if (op == OP_MUL && am_is_matrix(a, NULL, NULL) && b->kind == V_LIST) {   /* matrix product, matrix times vector */
+        if (am_is_matrix(b, NULL, NULL)) return am_matmul((Value *)a, (Value *)b);
+        return am_matvec((Value *)a, (Value *)b);
+    }
+    if (op == OP_DIV && am_is_matrix(b, NULL, NULL)) am_fail("dividing by a matrix: multiply by inverse(B) instead");
     if (a->kind == V_LIST || b->kind == V_LIST) {             /* element by element, or a number with each element */
         if (a->kind == V_LIST && b->kind == V_LIST && a->n != b->n) am_fail("lists of different lengths (%d and %d)", a->n, b->n);
         int n = a->kind == V_LIST ? a->n : b->n;
@@ -177,6 +182,7 @@ Value *v_neg(const Value *a) {
 }
 
 Value *v_pow(const Value *a, const Value *b) {
+    if (am_is_matrix(a, NULL, NULL)) return am_matpow((Value *)a, (Value *)b);
     if (a->kind == V_LIST) {
         Value *r = v_list(a->n);
         for (int i = 0; i < a->n; i++) r->items[i] = v_pow(a->items[i], b);

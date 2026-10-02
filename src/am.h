@@ -105,6 +105,12 @@ const char *am_rule_src(int i, const char **name);
 typedef Value *(*Builtin)(Value **args, int n);
 Builtin am_builtin(const char *name, size_t len);
 int am_builtin_doc(int i, const char **name, const char **sig, const char **doc);
+int am_is_matrix(const Value *v, int *rows, int *cols);
+Value *am_matmul(Value *a, Value *b);
+Value *am_matvec(Value *a, Value *v);
+Value *am_matpow(Value *a, Value *e);
+Builtin am_matrix_builtin(const char *name, size_t len);
+int am_matrix_doc(int i, const char **name, const char **sig, const char **doc);
 char *am_reference(const char *topic);          /* the language reference, or one function's entry (malloc'd) */
 const char *am_suggest(const char *name);        /* a known function close to a misspelled name, or NULL */
 extern long am_max_chars;                        /* answers longer than this are cut (0: no limit) */

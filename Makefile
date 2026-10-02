@@ -3,7 +3,7 @@ DEPS ?= $(CURDIR)/deps
 CFLAGS ?= -O2 -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Wno-unused-parameter -Wno-sign-compare
 CPPFLAGS += -I$(DEPS)/include
 LDLIBS = $(DEPS)/lib/msolve_main.o -L$(DEPS)/lib -lmsolve -lneogb -lflint -lmpfr -lgmp -lgomp -lm -lpthread
-SRC = src/value.c src/kernel.c src/account.c src/lang.c src/builtins.c src/msolve.c src/integrate.c src/series.c src/numeric.c src/certify.c src/reference.c src/json.c src/mcp.c src/libtext.c src/main.c
+SRC = src/value.c src/kernel.c src/account.c src/lang.c src/builtins.c src/msolve.c src/integrate.c src/series.c src/numeric.c src/certify.c src/matrix.c src/reference.c src/json.c src/mcp.c src/libtext.c src/main.c
 OBJ = $(SRC:.c=.o)
 
 amath: $(OBJ)
