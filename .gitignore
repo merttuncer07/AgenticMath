@@ -1,0 +1,4 @@
+amath
+src/*.o
+deps/
+build-deps/
