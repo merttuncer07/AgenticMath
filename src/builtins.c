@@ -165,6 +165,30 @@ static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
     Value *r = v_num();
     f(r->num, a[0]->num, am_ca);
     if (ca_is_special(r->num, am_ca)) am_fail("%s is undefined here", name);
+    if (!strcmp(name, "sin") || !strcmp(name, "cos") || !strcmp(name, "tan") || !strcmp(name, "atan") || !strcmp(name, "asin") || !strcmp(name, "acos")) {
+        /* sin(1), atan(2): Calcium writes them through exp(I) and log of complex numbers; kept as function terms
+           unless the value is algebraic or a rational multiple of pi (sin(pi/6), atan(1)) */
+        int nice = 1;
+        if (!CA_IS_QQ(r->num, am_ca)) {
+            ca_field_srcptr K = CA_FIELD(r->num, am_ca);
+            for (slong i = 0; i < CA_FIELD_LENGTH(K) && nice; i++) {
+                ca_ext_ptr e = CA_FIELD_EXT_ELEM(K, i);
+                if (!CA_EXT_IS_QQBAR(e) && CA_EXT_HEAD(e) != CA_Pi) nice = 0;
+            }
+        }
+        if (!nice) {
+            int odd = strcmp(name, "cos") && strcmp(name, "acos");
+            if (odd && ca_check_is_real(a[0]->num, am_ca) == T_TRUE && ca_check_is_negative_real(a[0]->num, am_ca) == T_TRUE) {
+                Value *m = v_neg(a[0]);
+                return v_neg(am_kernel_value(name, &m, 1));
+            }
+            if (!strcmp(name, "cos") && ca_check_is_real(a[0]->num, am_ca) == T_TRUE && ca_check_is_negative_real(a[0]->num, am_ca) == T_TRUE) {
+                Value *m = v_neg(a[0]);
+                return am_kernel_value(name, &m, 1);
+            }
+            return am_kernel_value(name, a, 1);
+        }
+    }
     return r;
 }
 #define CAFN(cname, flintfn) \

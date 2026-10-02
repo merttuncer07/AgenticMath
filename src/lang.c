@@ -339,6 +339,19 @@ static void lean_identity(Value *a, Value *b) {
     free(L); free(vs); free(as); free(bs);
 }
 
+/* generator i involves no plain variable (sin(1), zeta(3)) */
+static int am_free_of_vars(int i) {
+    if (!am_vars[i].kernel) return 0;
+    if (am_vars[i].numval) return 1;
+    for (int j = 0; j < am_vars[i].nargs; j++) {
+        Value *a = am_vars[i].args[j];
+        if (a->kind != V_RF) continue;
+        int u[AM_MAXVARS] = {0}; fmpz_mpoly_q_used_vars(u, a->rf, am_mp);
+        for (int k = 0; k < am_nvars; k++) if (u[k] && !am_free_of_vars(k)) return 0;
+    }
+    return 1;
+}
+
 static Value *compare(const char *op, Value *a, Value *b) {
     if (!strcmp(op, "=")) { Value *r = v_list(2); r->kind = V_EQ; r->items[0] = a; r->items[1] = b; return r; }
     Value *d = v_sub(a, b);
@@ -360,7 +373,15 @@ static Value *compare(const char *op, Value *a, Value *b) {
             int z = am_zero_test(d, where, sizeof where);
             if (z == 1) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference reduces to 0 (using tan = sin/cos, multiple angles, sin^2 + cos^2 = 1, sqrt(u)^2 = u)"); }
             else if (z == 0) { t = T_FALSE; if (!in_condition) { if (where[0]) am_status(S_PROVED, "the two sides differ at %s (certified evaluation)", where); else am_status(S_PROVED, "the difference is a nonzero number (certified evaluation)"); } }
-            else if (z == 2) { t = T_TRUE; if (!in_condition) am_status(S_PROBABLE, "equal at 5 random points (certified evaluation), not proved symbolically"); }
+            else if (z == 2) {
+                t = T_TRUE;
+                int plain = 0;
+                for (int i = 0; i < am_nvars; i++) if (used[i] && !am_free_of_vars(i)) plain = 1;
+                if (!in_condition) {
+                    if (plain) am_status(S_PROBABLE, "equal at 5 random points (certified evaluation), not proved symbolically");
+                    else am_status(S_PROBABLE, "the difference of these numbers is within 10^-70 of 0 (certified ball arithmetic), not proved");
+                }
+            }
             else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that could not be decided"); }
         }
     } else if (d->kind == V_NUM) {

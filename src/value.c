@@ -312,7 +312,10 @@ static void put_fexpr(Str *b, const fexpr_t e, int prec) {
     static const struct { int id; const char *name; } fn[] = {
         {FEXPR_Sqrt, "sqrt"}, {FEXPR_Exp, "exp"}, {FEXPR_Log, "log"}, {FEXPR_Sin, "sin"}, {FEXPR_Cos, "cos"},
         {FEXPR_Tan, "tan"}, {FEXPR_Atan, "atan"}, {FEXPR_Asin, "asin"}, {FEXPR_Acos, "acos"}, {FEXPR_Abs, "abs"},
-        {FEXPR_Gamma, "gamma"}, {FEXPR_Erf, "erf"}, {-1, NULL}};
+        {FEXPR_Gamma, "gamma"}, {FEXPR_Erf, "erf"}, {FEXPR_Re, "re"}, {FEXPR_Im, "im"}, {FEXPR_Conjugate, "conj"},
+        {FEXPR_Arg, "arg"}, {FEXPR_Sign, "sign"}, {FEXPR_Floor, "floor"}, {FEXPR_Ceil, "ceil"}, {FEXPR_Sinh, "sinh"},
+        {FEXPR_Cosh, "cosh"}, {FEXPR_Tanh, "tanh"}, {FEXPR_Atanh, "atanh"}, {FEXPR_Asinh, "asinh"}, {FEXPR_Acosh, "acosh"},
+        {FEXPR_Erfc, "erfc"}, {FEXPR_Erfi, "erfi"}, {FEXPR_LogGamma, "loggamma"}, {FEXPR_Sqrt, "sqrt"}, {-1, NULL}};
     if (fexpr_is_integer(e)) {
         fmpz_t c; fmpz_init(c); fexpr_get_fmpz(c, e);
         char *s = fmpz_get_str(NULL, 10, c); sput(b, s); flint_free(s); fmpz_clear(c);
@@ -401,7 +404,10 @@ static void put_value(Str *b, const Value *v) {
             break;
         }
         if (CA_IS_QQ(v->num, am_ca)) { char *s = fmpq_get_str(NULL, 10, CA_FMPQ(v->num)); sput(b, s); flint_free(s); break; }
-        {   /* pi, exp(2), log(3), ... as generators: printed like any expression */
+        qqbar_t aq; qqbar_init(aq);
+        int algebraic = ca_get_qqbar(aq, v->num, am_ca);
+        qqbar_clear(aq);
+        if (!algebraic) {   /* pi, exp(2), log(3), ... as generators: printed like any expression */
             Value *r = am_field_rf(v);
             if (r && r->kind == V_RF) { put_value(b, r); break; }
             if (r && r->kind == V_NUM && CA_IS_QQ(r->num, am_ca)) { put_value(b, r); break; }
