@@ -42,3 +42,8 @@ comes close on speed (benchmarks on real sizes).
   in 16t^3 - 16t). We use Horner's rule with ca arithmetic instead. To report.
 - msolve 0.9.0, `msolve_julia`: calls `exit(1)` on failure and reads `gens` after freeing it; hence the child
   process.
+- msolve 0.9.0 build: `configure` detects the building machine's vector extensions (up to AVX-512) and the
+  sources use them under `HAVE_AVX2`/`HAVE_AVX512_F`, so a static binary built on one machine dies with an
+  illegal instruction on another. We answer the detection with `ax_cv_have_avx_os_support_ext=no
+  ax_cv_have_avx512_os_support_ext=no` and pass SSE flags only (Makefile, `MSOLVE_FLAGS`). A build option for
+  portable binaries would help upstream; our own Gröbner engine should dispatch at run time instead.
