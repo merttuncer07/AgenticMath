@@ -263,6 +263,7 @@ static int unevaluated(const Value *v) {                     /* contains an inte
 }
 
 static Value *integrate_any(Value *f, int x, int depth);
+static int unevaluated(const Value *v);
 Value *rf_den_value(const Value *t);
 
 /* the library's rules for antiderivative(f, x); when none applies, integrate(f, x) left as it is */
@@ -473,7 +474,7 @@ static Value *tan_to_sincos(Value *f) {
     return any ? am_subs_rf(f, val) : f;
 }
 
-static Value *integrate_any(Value *f, int x, int depth) {
+static Value *integrate_any0(Value *f, int x, int depth) {
     if (depth > 50) am_fail("integrate: too deep");
     if (f->kind == V_NUM) return v_mul(f, am_gen(x));
     if (f->kind != V_RF) am_fail("integrate needs an expression");
@@ -530,6 +531,137 @@ static Value *integrate_any(Value *f, int x, int depth) {
         return unevaluated(whole) ? sum : whole;
     }
     return integrate_term(f, x, depth);
+}
+
+/* f(x) = g(u(x)) u'(x) with u a function term of x or the argument of one: int g(t) dt at t = u */
+/* u = c x^n and g has x only in powers x^(k n): x^n = t/c */
+static Value *deflate_x(Value *g, int x, Value *u, Value *T) {
+    if (g->kind != V_RF || u->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(u->rf), am_mp)) return NULL;
+    const fmpz_mpoly_struct *U = fmpz_mpoly_q_numref(u->rf);
+    if (fmpz_mpoly_length(U, am_mp) != 1) return NULL;
+    int us[AM_MAXVARS] = {0};
+    fmpz_mpoly_used_vars(us, U, am_mp);
+    for (int i = 0; i < am_nvars; i++) if (us[i] && i != x) return NULL;
+    slong n = fmpz_mpoly_degree_si(U, x, am_mp);
+    if (n < 2) return NULL;
+    fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, U, 0, am_mp);
+    Value *cv = v_num(); ca_set_fmpz(cv->num, c, am_ca); fmpz_clear(c);
+    Value *part[2];
+    for (int w = 0; w < 2; w++) {
+        const fmpz_mpoly_struct *P = w ? fmpz_mpoly_q_denref(g->rf) : fmpz_mpoly_q_numref(g->rf);
+        Value *sum = v_num();
+        fmpz_mpoly_t term; fmpz_mpoly_init(term, am_mp);
+        ulong ex[AM_MAXVARS];
+        for (slong t = 0; t < fmpz_mpoly_length(P, am_mp); t++) {
+            fmpz_mpoly_get_term_exp_ui(ex, P, t, am_mp);
+            if (ex[x] % (ulong)n) { fmpz_mpoly_clear(term, am_mp); return NULL; }
+            ulong k = ex[x] / (ulong)n;
+            fmpz_mpoly_get_term(term, P, t, am_mp);
+            ex[x] = 0;
+            fmpz_t co; fmpz_init(co); fmpz_mpoly_get_term_coeff_fmpz(co, P, t, am_mp);
+            fmpz_mpoly_set_coeff_fmpz_ui(term, co, ex, am_mp);   /* the term without x */
+            fmpz_clear(co);
+            Value *tv = v_rf();
+            fmpz_mpoly_zero(fmpz_mpoly_q_numref(tv->rf), am_mp);
+            { fmpz_t co2; fmpz_init(co2); fmpz_mpoly_get_term_coeff_fmpz(co2, P, t, am_mp);
+              fmpz_mpoly_set_coeff_fmpz_ui(fmpz_mpoly_q_numref(tv->rf), co2, ex, am_mp); fmpz_clear(co2); }
+            fmpz_mpoly_one(fmpz_mpoly_q_denref(tv->rf), am_mp);
+            Value *kv = v_num(); ca_set_ui(kv->num, k, am_ca);
+            sum = v_add(sum, v_mul(tv, v_pow(v_div(T, cv), kv)));
+        }
+        fmpz_mpoly_clear(term, am_mp);
+        part[w] = sum;
+    }
+    return v_div(part[0], part[1]);
+}
+
+/* log(exp(u)) -> u: they differ by a constant (a multiple of 2 pi I) on each interval, as antiderivatives may */
+static Value *log_exp(Value *F) {
+    if (F->kind != V_RF) return F;
+    int us[AM_MAXVARS] = {0}, n0 = am_nvars, any = 0;
+    fmpz_mpoly_q_used_vars(us, F->rf, am_mp);
+    Value *val[AM_MAXVARS];
+    for (int i = 0; i < n0; i++) {
+        val[i] = am_gen(i);
+        if (!us[i] || !am_vars[i].head || strcmp(am_vars[i].head, "log") || am_vars[i].nargs != 1) continue;
+        int g = am_gen_of(am_vars[i].args[0]);
+        if (g >= 0 && am_vars[g].head && !strcmp(am_vars[g].head, "exp") && am_vars[g].nargs == 1) { val[i] = am_vars[g].args[0]; any = 1; }
+    }
+    return any ? am_subs_rf(F, val) : F;
+}
+
+static int subst_depth;
+static int bound_head(const char *h) {
+    return h && (!strcmp(h, "integrate") || !strcmp(h, "antiderivative") || !strcmp(h, "sum") || !strcmp(h, "diff") || !strcmp(h, "limit"));
+}
+static Value *by_substitution(Value *f, int x, int depth) {
+    if (f->kind != V_RF || subst_depth >= 3) return NULL;
+    int used[AM_MAXVARS] = {0}, n0 = am_nvars;
+    fmpz_mpoly_q_used_vars(used, f->rf, am_mp);
+    Value *cands[2 * AM_MAXVARS]; int nc = 0;
+    for (int i = 0; i < n0; i++) {
+        if (!used[i] || !am_vars[i].kernel || am_vars[i].numval || am_free_of(am_gen(i), x)) continue;
+        if (bound_head(am_vars[i].head)) return NULL;
+        cands[nc++] = am_gen(i);
+        if (am_vars[i].nargs == 1 && !am_free_of(am_vars[i].args[0], x)) cands[nc++] = am_vars[i].args[0];
+    }
+    char tname[16]; snprintf(tname, sizeof tname, "t_s%d", subst_depth);
+    int tv = am_var_index(tname, strlen(tname));
+    Value *T = am_gen(tv), *X = am_gen(x);
+    for (int c = 0; c < nc; c++) {
+        Value *u = cands[c];
+        if (am_gen_of(u) == x) continue;
+        Value *ua[2] = {u, X};
+        Value *du = am_call("diff", ua, 2);
+        if (du->kind == V_NUM && ca_check_is_zero(du->num, am_ca) == T_TRUE) continue;
+        if (am_free_of(du, x)) continue;                         /* u linear: the rules handle it */
+        Value *q = am_normal_form(v_div(f, du));
+        if (q->kind == V_NUM) {                                   /* f = c u' */
+            am_work("substitution t = %s", v_str_of(u));
+            return v_mul(q, u);
+        }
+        if (q->kind != V_RF) continue;
+        /* every function term of x in q written in t: u itself, or head(c u) */
+        int us[AM_MAXVARS] = {0}, ok = 1, n1 = am_nvars;
+        fmpz_mpoly_q_used_vars(us, q->rf, am_mp);
+        Value *val[AM_MAXVARS];
+        int gu = am_gen_of(u);
+        for (int i = 0; i < n1; i++) {
+            val[i] = am_gen(i);
+            if (!us[i] || i == x || !am_vars[i].kernel || am_free_of(am_gen(i), x)) continue;
+            if (i == gu) { val[i] = T; continue; }
+            if (am_vars[i].nargs != 1 || bound_head(am_vars[i].head)) { ok = 0; break; }
+            if (gu >= 0 && am_vars[gu].head && !strcmp(am_vars[gu].head, "exp") && !strcmp(am_vars[i].head, "exp")) {
+                Value *r = am_normal_form(v_div(am_vars[i].args[0], am_vars[gu].args[0]));   /* exp(k v) = t^k */
+                fmpq_t q; fmpq_init(q);
+                int whole = v_is_rational(r, q) && fmpz_is_one(fmpq_denref(q));
+                fmpq_clear(q);
+                if (whole) { val[i] = v_pow(T, r); continue; }
+            }
+            Value *r = am_normal_form(v_div(am_vars[i].args[0], u));
+            if (!am_free_of(r, x)) { ok = 0; break; }
+            Value *arg = v_mul(r, T);
+            val[i] = am_call(am_vars[i].head, &arg, 1);
+        }
+        if (!ok) continue;
+        Value *g = am_subs_rf(q, val);
+        if (!am_free_of(g, x)) g = deflate_x(g, x, u, T);
+        if (!g || !am_free_of(g, x)) continue;
+        subst_depth++;
+        Value *G = integrate_any(g, tv, depth + 1);
+        subst_depth--;
+        if (unevaluated(G)) continue;
+        am_work("substitution t = %s", v_str_of(u));
+        return log_exp(back_subs(G, tv, u));
+    }
+    return NULL;
+}
+
+static Value *integrate_any(Value *f, int x, int depth) {
+    Value *r = integrate_any0(f, x, depth);
+    if (!unevaluated(r)) return r;
+    Value *s2 = by_substitution(f, x, depth);
+    return s2 ? s2 : r;
 }
 
 /* ---------------- the check: derivative minus integrand is 0 ---------------- */

@@ -586,7 +586,8 @@ static Value *b_subs(Value **a, int n) {
         val[i] = g;
     }
     Value *eqs[64]; int ne = 0;
-    if (n == 3 && a[1]->kind == V_RF) { val[var_of(a[1])] = a[2]; }
+    int changed[AM_MAXVARS] = {0}, needed[AM_MAXVARS] = {0};
+    if (n == 3 && a[1]->kind == V_RF) { int v = var_of(a[1]); val[v] = a[2]; changed[v] = 1; }
     else {
         for (int i = 1; i < n; i++) {
             if (a[i]->kind == V_LIST) for (int j = 0; j < a[i]->n && ne < 64; j++) eqs[ne++] = a[i]->items[j];
@@ -594,13 +595,38 @@ static Value *b_subs(Value **a, int n) {
         }
         for (int i = 0; i < ne; i++) {
             if (eqs[i]->kind != V_EQ) am_fail("subs: give each substitution as x = value");
-            val[var_of(eqs[i]->items[0])] = eqs[i]->items[1];
+            int v = var_of(eqs[i]->items[0]);
+            val[v] = eqs[i]->items[1]; changed[v] = 1;
         }
     }
     int n0 = am_nvars;                                           /* only the terms there now: new ones are already substituted */
+    {   /* the terms the expression uses, with the terms inside their arguments */
+        Value *f = a[0];
+        int nf = (f->kind == V_LIST || f->kind == V_EQ) ? f->n : 1;
+        for (int k = 0; k < nf; k++) {
+            Value *g = (f->kind == V_LIST || f->kind == V_EQ) ? f->items[k] : f;
+            if (g->kind == V_RF) { int u[AM_MAXVARS] = {0}; fmpz_mpoly_q_used_vars(u, g->rf, am_mp); for (int i = 0; i < n0; i++) needed[i] |= u[i]; }
+        }
+        for (int i = n0 - 1; i >= 0; i--) {
+            if (!needed[i] || !am_vars[i].kernel || am_vars[i].numval) continue;
+            for (int j = 0; j < am_vars[i].nargs; j++) if (am_vars[i].args[j]->kind == V_RF) {
+                int u[AM_MAXVARS] = {0}; fmpz_mpoly_q_used_vars(u, am_vars[i].args[j]->rf, am_mp);
+                for (int k = 0; k < n0; k++) needed[k] |= u[k];
+            }
+        }
+    }
     for (int i = 0; i < n0; i++) {                               /* function terms: their arguments substituted, then re-evaluated */
         if (!am_vars[i].kernel) continue;
         if (am_vars[i].numval) { val[i] = am_vars[i].numval; continue; }
+        if (!needed[i]) continue;
+        int touched = 0, vars = 0;                               /* arguments the substitution does not reach: the term stays */
+        for (int j = 0; j < am_vars[i].nargs && !touched; j++) if (am_vars[i].args[j]->kind == V_RF) {
+            int u[AM_MAXVARS] = {0}; fmpz_mpoly_q_used_vars(u, am_vars[i].args[j]->rf, am_mp);
+            for (int k = 0; k < n0; k++) if (u[k]) { vars = 1; if (changed[k]) touched = 1; }
+        }
+        if (!vars) touched = 1;                                  /* log(2): evaluated again, a number */
+        if (!touched) continue;
+        changed[i] = 1;
         Value **ka = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *ka);
         for (int j = 0; j < am_vars[i].nargs; j++) ka[j] = am_subs_rf(am_vars[i].args[j], val);
         val[i] = am_call(am_vars[i].head, ka, am_vars[i].nargs);
