@@ -801,6 +801,13 @@ static Value *b_binomial(Value **a, int n) {
     return v;
 }
 
+Value *b_integrate(Value **a, int n);
+
+static Value *b_free(Value **a, int n) {
+    need(n, 2, 2, "free");
+    return v_bool(am_free_of(a[0], var_of(a[1])));
+}
+
 /* ---------------- the table ---------------- */
 
 static const struct { const char *name; Builtin f; const char *sig, *doc; } TABLE[] = {
@@ -808,6 +815,8 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"roots", b_roots, "roots(p[, x])", "every complex root of a polynomial in one variable, as exact algebraic numbers, each once"},
     {"realroots", b_realroots, "realroots(p[, x])", "the real roots of a polynomial, exactly"},
     {"solve", b_solve, "solve(eq, x) | solve([eqs], [vars])", "exact solutions of one polynomial equation, or of a polynomial system (msolve); each solution checked by substitution"},
+    {"integrate", b_integrate, "integrate(f, x)", "an antiderivative, checked by differentiating it back; rational functions exactly (Hermite, Rothstein-Trager, arctangents), polynomials times exp/sin/cos/log/atan by parts, and the library's rules"},
+    {"free", b_free, "free(e, x)", "true when e does not depend on x (looking inside function terms)"},
     {"N", b_N, "N(x[, digits])", "a decimal with every digit guaranteed (default 15 digits); works on lists and equations"},
     {"diff", b_diff, "diff(f, x[, n])", "derivative (n-th) with respect to x, through sin, exp, log, f(x), ... by the chain rule"},
     {"subs", b_subs, "subs(f, x = a[, y = b]) | subs(f, [x = a, ...]) | subs(f, x, a)", "substitute values for variables; function terms are re-evaluated"},

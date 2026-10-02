@@ -84,12 +84,23 @@ int v_is_rational(const Value *v, fmpq_t out) {
     return 0;
 }
 
+/* a number Calcium holds in a number field but that is rational (such as -1 met in Q(sqrt(3))): as a rational */
+static void normalize_num(Value *v) {
+    if (v->kind != V_NUM || CA_IS_QQ(v->num, am_ca) || ca_is_special(v->num, am_ca)) return;
+    if (ca_check_is_rational(v->num, am_ca) == T_TRUE) {
+        fmpq_t q; fmpq_init(q);
+        if (ca_get_fmpq(q, v->num, am_ca)) ca_set_fmpq(v->num, q, am_ca);
+        fmpq_clear(q);
+    }
+}
+
 Value *v_to_rf(const Value *v) {
     if (v->kind == V_RF) return (Value *)v;
+    normalize_num((Value *)v);
     fmpq_t q; fmpq_init(q);
     if (!v_is_rational(v, q)) {
         fmpq_clear(q);
-        if (v->kind == V_NUM) return am_number_kernel(v);   /* sqrt(2) among variables: a generator */
+        if (v->kind == V_NUM) return am_number_rf(v);       /* sqrt(2) among variables: a generator */
         am_fail("expected a number or a polynomial");
     }
     Value *r = v_rf();
@@ -100,6 +111,7 @@ Value *v_to_rf(const Value *v) {
 
 /* a constant rational function as an exact number */
 static Value *rf_to_num_if_const(Value *v) {
+    am_reduce_squares(v);
     fmpq_t q; fmpq_init(q);
     if (v->kind == V_RF && v_is_rational(v, q)) { Value *r = v_num(); ca_set_fmpq(r->num, q, am_ca); fmpq_clear(q); return r; }
     fmpq_clear(q);
@@ -136,6 +148,7 @@ static Value *arith(const Value *a, const Value *b, Op op) {
             ca_div(r->num, a->num, b->num, am_ca);
             break;
         }
+        normalize_num(r);
         return r;
     }
     if ((a->kind != V_NUM && a->kind != V_RF) || (b->kind != V_NUM && b->kind != V_RF)) am_fail("arithmetic needs numbers or polynomials");
@@ -221,13 +234,32 @@ static int is_sum(const char *s) {          /* more than one term at the top lev
     return 0;
 }
 
+/* FLINT writes the polynomial with placeholder names, which are then replaced by the real ones, so that the
+ * spacing never reaches inside a name such as log(x + 1) */
 static void put_mpoly(Str *b, const fmpz_mpoly_t p, int paren) {
-    char *s = fmpz_mpoly_get_str_pretty(p, am_varnames, am_mp);
+    static char ph[AM_MAXVARS][8];
+    static const char *phn[AM_MAXVARS];
+    for (int i = 0; i < AM_MAXVARS; i++) { snprintf(ph[i], sizeof ph[i], "\001%c", 'A' + i); phn[i] = ph[i]; }
+    char *s = fmpz_mpoly_get_str_pretty(p, phn, am_mp);
     int par = paren && is_sum(s);
-    if (par) sput(b, "(");
-    put_spaced(b, s);
-    if (par) sput(b, ")");
+    Str t = {0, 0, 0};
+    sput(&t, "");
+    put_spaced(&t, s);
     flint_free(s);
+    if (par) sput(b, "(");
+    for (const char *q = t.s; *q; q++) {
+        if (*q != '\001') { char one[2] = {*q, 0}; sput(b, one); continue; }
+        int i = q[1] - 'A';
+        q++;
+        const char *nm = am_varnames[i];
+        int wrap = am_vars[i].kernel && !am_vars[i].head && (strchr(nm, '/') || strchr(nm, '+') || strchr(nm, ' ') || nm[0] == '-')
+                   && strncmp(nm, "RootOf(", 7) && strncmp(nm, "sqrt(", 5);
+        if (wrap) sput(b, "(");
+        sput(b, nm);
+        if (wrap) sput(b, ")");
+    }
+    if (par) sput(b, ")");
+    free(t.s);
 }
 
 /* a Calcium expression tree written in ordinary infix */
@@ -334,6 +366,13 @@ static void put_value(Str *b, const Value *v) {
         char *s = fmpz_mpoly_get_str_pretty(d, am_varnames, am_mp);
         int par = is_sum(s) || strchr(s, '*') || strchr(s, '^');
         flint_free(s);
+        {   /* a single generator, such as sqrt(x^2 + 1), needs no parentheses */
+            Value tmp; memset(&tmp, 0, sizeof tmp); tmp.kind = V_RF;
+            fmpz_mpoly_q_init(tmp.rf, am_mp);
+            fmpz_mpoly_set(fmpz_mpoly_q_numref(tmp.rf), d, am_mp);
+            if (am_gen_of(&tmp) >= 0) par = 0;
+            fmpz_mpoly_q_clear(tmp.rf, am_mp);
+        }
         if (par) sput(b, "(");
         put_mpoly(b, d, 0);
         if (par) sput(b, ")");

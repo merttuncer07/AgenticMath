@@ -61,6 +61,7 @@ typedef struct {
     int kernel;                /* 0: a plain variable */
     char *head; Value **args; int nargs;    /* a function term head(args) */
     Value *numval;             /* an irrational number used as a generator */
+    int has_square; slong square;   /* sqrt(D) or I: the generator's square is the integer `square` */
 } AmVar;
 extern AmVar am_vars[AM_MAXVARS];
 int am_var_index(const char *name, size_t len);   /* a plain variable, registered on first use */
@@ -68,6 +69,10 @@ Value *am_gen(int i);
 int am_gen_of(const Value *v);                     /* the generator v is exactly, or -1 */
 Value *am_kernel_value(const char *head, Value **args, int n);
 Value *am_number_kernel(const Value *num);
+Value *am_number_rf(const Value *num);            /* an irrational number among variables, canonically */
+void am_reduce_squares(Value *v);                 /* sqrt(D)^2 -> D, I^2 -> -1 in a rational function */
+Value *am_normal_form(Value *v);                   /* tan as sin/cos, sin^2 + cos^2 = 1 reduced */
+int am_zero_test(Value *v, char *witness, size_t wlen);   /* 1 zero, 0 not (witness point), 2 zero at random points, -1 undecided */
 
 /* ---- the account of a statement: status, verdict, facts, work ---- */
 typedef enum { S_NONE, S_EXACT, S_PROVED, S_CERTIFIED, S_PROBABLE, S_NUMERIC, S_UNKNOWN } Status;

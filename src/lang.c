@@ -300,7 +300,14 @@ static Value *compare(const char *op, Value *a, Value *b) {
         for (int i = 0; i < am_nvars; i++) if (used[i] && am_vars[i].kernel) kernels = 1;
         if (fmpz_mpoly_q_is_zero(d->rf, am_mp)) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference is identically 0"); }
         else if (!kernels) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the difference is a nonzero rational function"); }
-        else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that the arithmetic cannot decide"); }
+        else {
+            char where[256];
+            int z = am_zero_test(d, where, sizeof where);
+            if (z == 1) { t = T_TRUE; if (!in_condition) am_status(S_PROVED, "the difference reduces to 0 (using tan = sin/cos, sin^2 + cos^2 = 1, sqrt(u)^2 = u)"); }
+            else if (z == 0) { t = T_FALSE; if (!in_condition) am_status(S_PROVED, "the two sides differ at %s (certified evaluation)", where); }
+            else if (z == 2) { t = T_TRUE; if (!in_condition) am_status(S_PROBABLE, "equal at 5 random points (certified evaluation), not proved symbolically"); }
+            else { t = T_UNKNOWN; am_status(S_UNKNOWN, "the difference involves function terms that could not be decided"); }
+        }
     } else if (d->kind == V_NUM) {
         if (a->kind != V_NUM) a = reevaluate(a);
         if (b->kind != V_NUM) b = reevaluate(b);
@@ -341,6 +348,59 @@ static int equal_quiet(Value *a, Value *b) {
     return fmpz_mpoly_q_is_zero(d->rf, am_mp);
 }
 
+static int match(Node *p, Value *v, Frame *f);
+
+/* a*b*...: each pattern factor that is not a plain name takes one factor of the monomial v (a generator, or a
+ * generator to a power); a single plain name, if there is one, takes everything left, numbers included */
+static void flatten_product(Node *p, Node **out, int *n) {
+    if (p->k == N_BIN && p->op[0] == '*' && !p->op[1]) { flatten_product(p->a[0], out, n); flatten_product(p->a[1], out, n); }
+    else if (*n < 8) out[(*n)++] = p;
+}
+static int match_product(Node *p, Value *v, Frame *f) {
+    Node *pf[8]; int np = 0;
+    flatten_product(p, pf, &np);
+    if (v->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(v->rf), am_mp)) return 0;
+    const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf);
+    if (fmpz_mpoly_length(N, am_mp) != 1) return 0;
+    ulong ex[AM_MAXVARS]; fmpz_mpoly_get_term_exp_ui(ex, N, 0, am_mp);
+    fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, N, 0, am_mp);
+    int gens[AM_MAXVARS], ng = 0;
+    for (int i = 0; i < am_nvars; i++) if (ex[i]) gens[ng++] = i;
+    int rest = -1, nfix = 0;
+    for (int i = 0; i < np; i++) { if (pf[i]->k == N_NAME && rest < 0) rest = i; else nfix++; }
+    if (nfix > ng) { fmpz_clear(c); return 0; }
+    /* try every assignment of the fixed pattern factors to distinct generators */
+    int choice[8], ok = 0;
+    for (int i = 0; i < 8; i++) choice[i] = 0;
+    long total = 1;
+    for (int i = 0; i < nfix; i++) total *= ng;
+    for (long code = 0; code < total && !ok; code++) {
+        long cc = code; int usedg[AM_MAXVARS] = {0}, distinct = 1;
+        for (int i = 0; i < nfix; i++) { choice[i] = gens[cc % ng]; cc /= ng; if (usedg[choice[i]]++) distinct = 0; }
+        if (!distinct) continue;
+        Frame save = *f;
+        int good = 1, k = 0;
+        ulong left[AM_MAXVARS]; memcpy(left, ex, sizeof left);
+        for (int i = 0; i < np && good; i++) {
+            if (i == rest) continue;
+            int g = choice[k++];
+            Value *e = v_num(); ca_set_ui(e->num, ex[g], am_ca);
+            Value *piece = v_pow(am_gen(g), e);
+            good = match(pf[i], piece, f);
+            left[g] = 0;
+        }
+        if (good) {
+            Value *r = v_num(); ca_set_fmpz(r->num, c, am_ca);
+            for (int i = 0; i < am_nvars; i++) if (left[i]) { Value *e = v_num(); ca_set_ui(e->num, left[i], am_ca); r = v_mul(r, v_pow(am_gen(i), e)); }
+            if (rest >= 0) good = match(pf[rest], r, f);
+            else good = r->kind == V_NUM && ca_check_is_one(r->num, am_ca) == T_TRUE;
+        }
+        if (good) ok = 1; else *f = save;
+    }
+    fmpz_clear(c);
+    return ok;
+}
+
 /* does pattern p match v? binds names into f */
 static int match(Node *p, Value *v, Frame *f) {
     switch (p->k) {
@@ -366,6 +426,23 @@ static int match(Node *p, Value *v, Frame *f) {
         for (int i = 0; i < p->n; i++) if (!match(p->a[i], am_vars[g].args[i], f)) return 0;
         return 1;
     }
+    case N_BIN:
+        if (p->op[0] == '^' && !p->op[1]) {                   /* u^n matches a single generator to a power */
+            if (v->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(v->rf), am_mp)) return 0;
+            const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf);
+            if (fmpz_mpoly_length(N, am_mp) != 1) return 0;
+            fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, N, 0, am_mp);
+            int one = fmpz_is_one(c); fmpz_clear(c);
+            if (!one) return 0;
+            ulong ex[AM_MAXVARS]; fmpz_mpoly_get_term_exp_ui(ex, N, 0, am_mp);
+            int g = -1, cnt = 0;
+            for (int i = 0; i < am_nvars; i++) if (ex[i]) { g = i; cnt++; }
+            if (cnt != 1 || ex[g] < 2) return 0;
+            Value *e = v_num(); ca_set_ui(e->num, ex[g], am_ca);
+            return match(p->a[0], am_gen(g), f) && match(p->a[1], e, f);
+        }
+        if (p->op[0] == '*' && !p->op[1]) return match_product(p, v, f);
+        return 0;
     case N_LIST:
         if (v->kind != V_LIST || v->n != p->n) return 0;
         for (int i = 0; i < p->n; i++) if (!match(p->a[i], v->items[i], f)) return 0;
@@ -415,7 +492,7 @@ Value *am_call(const char *name, Value **args, int n) {
     Builtin b = am_builtin(name, strlen(name));
     if (b) return b(args, n);
     if (has_rules(name)) {                                    /* rules exist, none applies: the call stays as it is */
-        if (!library_loading) { char *js = am_json_str(name); am_fact("unevaluated", "%s", js); free(js); }
+        if (!library_loading && strcmp(name, "antiderivative")) { char *js = am_json_str(name); am_fact("unevaluated", "%s", js); free(js); }
         return am_kernel_value(name, args, n);
     }
     note_undefined(name);
@@ -523,7 +600,7 @@ static Value *eval(Node *n) {
         int want = n->k == N_OR, t = truth_of(eval(n->a[0]), "a side of and/or");
         if (t != want) t = truth_of(eval(n->a[1]), "a side of and/or");
         in_condition--;
-        am_status(S_PROVED, "decided by exact arithmetic");
+        if (!in_condition) am_status(S_PROVED, "decided by exact arithmetic");
         return v_bool(t);
     }
     case N_FACT: {

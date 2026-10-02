@@ -1,0 +1,20 @@
+# Antiderivatives of the elementary functions of a linear argument, as rules for antiderivative(f, x), which
+# integrate(f, x) consults; integrate then checks every result by differentiation. integrate (in C) applies linearity, takes
+# out constant factors, integrates rational functions exactly and polynomials times exp, sin, cos, log or atan by
+# parts; these rules handle what is left. Every result is checked by differentiating it back.
+linear(u, x) := degree(u, x) == 1 and free(diff(u, x), x)
+antiderivative(exp(u), x) := exp(u)/diff(u, x) if linear(u, x)
+antiderivative(sin(u), x) := -cos(u)/diff(u, x) if linear(u, x)
+antiderivative(cos(u), x) := sin(u)/diff(u, x) if linear(u, x)
+antiderivative(tan(u), x) := -log(cos(u))/diff(u, x) if linear(u, x)
+antiderivative(log(u), x) := (u*log(u) - u)/diff(u, x) if linear(u, x)
+antiderivative(atan(u), x) := (u*atan(u) - log(1 + u^2)/2)/diff(u, x) if linear(u, x)
+antiderivative(sqrt(u), x) := 2*u*sqrt(u)/(3*diff(u, x)) if linear(u, x)
+
+# products of exponentials and trigonometric functions of linear arguments
+antiderivative(exp(u)*sin(v), x) := exp(u)*(diff(u, x)*sin(v) - diff(v, x)*cos(v))/(diff(u, x)^2 + diff(v, x)^2) if linear(u, x) and linear(v, x)
+antiderivative(exp(u)*cos(v), x) := exp(u)*(diff(u, x)*cos(v) + diff(v, x)*sin(v))/(diff(u, x)^2 + diff(v, x)^2) if linear(u, x) and linear(v, x)
+antiderivative(sin(u)*cos(u), x) := sin(u)^2/(2*diff(u, x)) if linear(u, x)
+antiderivative(sin(u)^2, x) := u/(2*diff(u, x)) - sin(u)*cos(u)/(2*diff(u, x)) if linear(u, x)
+antiderivative(cos(u)^2, x) := u/(2*diff(u, x)) + sin(u)*cos(u)/(2*diff(u, x)) if linear(u, x)
+antiderivative(exp(u)^n, x) := exp(u)^n/(n*diff(u, x)) if linear(u, x)

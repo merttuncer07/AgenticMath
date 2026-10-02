@@ -19,6 +19,8 @@ comes close on speed (benchmarks on real sizes).
 | rules, patterns, conditions, recursion, the library (lib/*.am) | ours | yes | the place where breadth grows |
 | function terms (kernels), chain rule, subs through them | ours | yes | on FLINT's polynomial arithmetic |
 | MCP server, JSON reader, reference, name suggestions | ours | yes | |
+| integrate: Hermite, Rothstein-Trager driver, LogToAtan, by parts, rules, check by differentiation | ours | yes | uses FLINT for polynomial gcd, resultants, factoring; Calcium for algebraic gcds |
+| normal form and zero test (trig, sqrt), certified witnesses | ours | yes | Arb for certified evaluation |
 | big integers | GMP (through FLINT) | no | the deepest layer; decided last |
 | rational functions in many variables | FLINT fmpz_mpoly_q | no | |
 | factor (whole numbers) | FLINT fmpz_factor, fmpz_is_prime | no | primality proofs |

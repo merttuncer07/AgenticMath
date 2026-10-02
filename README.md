@@ -64,6 +64,26 @@ generators of the polynomial arithmetic: `2*sin(x) + sin(x)` is `3*sin(x)`, `dif
 `cos(x)/sin(x)`, `subs` and `N` look inside them. An equality the arithmetic cannot settle, such as
 `sin(x)^2 + cos(x)^2 == 1`, answers `unknown`, never a guess.
 
+## Integration
+`integrate(f, x)` returns an antiderivative and checks it by differentiating it back; the status says how far
+the check went (`proved`: the derivative equals the integrand exactly; `probable`: equal at random points;
+`unknown`: not decided). What it does:
+- rational functions exactly: polynomial part, Hermite reduction, Rothstein–Trager with exact algebraic
+  coefficients, complex logarithms turned into real arctangents (Rioboo): `integrate(1/(x^3+1), x)` →
+  `(2*sqrt(3)*atan((2*x - 1)/sqrt(3)) + 2*log(x + 1) - log(x^2 - x + 1))/6`;
+- linearity and constant factors; a polynomial times exp, sin, cos (repeated integration by parts) or log, atan;
+- the rules for `antiderivative` in `lib/integrate.am`, written in the language (exp, sin, cos, tan, log, atan,
+  sqrt of a linear argument; exp·sin, exp·cos, sin·cos, sin², cos²);
+- what nothing finds stays as `integrate(...)`, with status `unknown` (`integrate(exp(x^2), x)`).
+
+Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if linear(u, x) and linear(v, x)`.
+
+## Deciding equality
+`a == b` subtracts and decides: exact arithmetic for numbers; for expressions, a normal form (tan = sin/cos,
+sin² + cos² = 1, sqrt(u)² = u, sqrt(D)² = D, I² = −1) that proves equality when the difference reduces to 0; a
+point where the sides differ, found by certified evaluation, proves `false`; equality at random points gives
+`true` only with status `probable`.
+
 ## Functions (v0.1)
 | | |
 |---|---|
