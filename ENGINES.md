@@ -21,6 +21,8 @@ comes close on speed (benchmarks on real sizes).
 | MCP server, JSON reader, reference, name suggestions | ours | yes | |
 | integrate: Hermite, Rothstein-Trager driver, LogToAtan, by parts, rules, check by differentiation | ours | yes | uses FLINT for polynomial gcd, resultants, factoring; Calcium for algebraic gcds |
 | normal form and zero test (trig, sqrt), certified witnesses | ours | yes | Arb for certified evaluation |
+| series, limits (with log symbols and exponential dominance), definite integrals | ours | yes | |
+| certified numerical integration | Arb (acb_calc_integrate) | no | our ball evaluator of expressions feeds it |
 | big integers | GMP (through FLINT) | no | the deepest layer; decided last |
 | rational functions in many variables | FLINT fmpz_mpoly_q | no | |
 | factor (whole numbers) | FLINT fmpz_factor, fmpz_is_prime | no | primality proofs |

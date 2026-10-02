@@ -279,7 +279,8 @@ int am_zero_test(Value *v, char *witness, size_t wlen) {
                 val[i] = q;
             }
         }
-        for (int i = 0; i < am_nvars; i++) {                   /* function terms at that point */
+        int n0 = am_nvars;
+        for (int i = 0; i < n0; i++) {                         /* function terms at that point */
             if (!am_vars[i].kernel) continue;
             if (am_vars[i].numval) { val[i] = am_vars[i].numval; continue; }
             Value **ka = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *ka);

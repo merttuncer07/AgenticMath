@@ -190,7 +190,23 @@ Value *v_pow(const Value *a, const Value *b) {
         return r;
     }
     fmpq_t e; fmpq_init(e);
-    if (!v_is_rational(b, e) || !fmpz_is_one(fmpq_denref(e))) { fmpq_clear(e); am_fail("a polynomial can only be raised to a whole power"); }
+    if (!v_is_rational(b, e) || !fmpz_is_one(fmpq_denref(e))) {
+        /* a^(k/2) through sqrt; any other power as exp(b log(a)) */
+        int half = v_is_rational(b, e) && fmpz_equal_si(fmpq_denref(e), 2) && fmpz_cmp_si(fmpq_numref(e), 1000) < 0 && fmpz_cmp_si(fmpq_numref(e), -1000) > 0;
+        if (half) {
+            slong k = fmpz_get_si(fmpq_numref(e));
+            fmpq_clear(e);
+            Value *arg = (Value *)a;
+            Value *r = am_call("sqrt", &arg, 1);
+            Value *kv = v_num(); ca_set_si(kv->num, k, am_ca);
+            return v_pow(r, kv);
+        }
+        fmpq_clear(e);
+        Value *arg = (Value *)a;
+        Value *l = am_call("log", &arg, 1);
+        Value *p = v_mul((Value *)b, l);
+        return am_call("exp", &p, 1);
+    }
     if (fmpz_cmp_si(fmpq_numref(e), 100000) > 0 || fmpz_cmp_si(fmpq_numref(e), -100000) < 0) { fmpq_clear(e); am_fail("exponent too large"); }
     slong k = fmpz_get_si(fmpq_numref(e));
     fmpq_clear(e);
@@ -346,6 +362,11 @@ static void put_fexpr(Str *b, const fexpr_t e, int prec) {
 static void put_value(Str *b, const Value *v) {
     switch (v->kind) {
     case V_NUM: {
+        if (ca_is_special(v->num, am_ca)) {
+            sput(b, ca_check_is_pos_inf(v->num, am_ca) == T_TRUE ? "oo" : ca_check_is_neg_inf(v->num, am_ca) == T_TRUE ? "-oo"
+                    : ca_check_is_uinf(v->num, am_ca) == T_TRUE ? "zoo" : "undefined");
+            break;
+        }
         if (CA_IS_QQ(v->num, am_ca)) { char *s = fmpq_get_str(NULL, 10, CA_FMPQ(v->num)); sput(b, s); flint_free(s); break; }
         fexpr_t e; fexpr_init(e);
         qqbar_t q; qqbar_init(q);

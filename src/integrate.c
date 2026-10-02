@@ -24,6 +24,7 @@
 #include <flint/fmpz_mpoly.h>
 #include <flint/ca_poly.h>
 #include <flint/qqbar.h>
+#include <flint/acb.h>
 
 /* ---------------- conversions ---------------- */
 
@@ -425,8 +426,142 @@ static truth_t is_zero_in_x(Value *d, int x) {
     return T_TRUE;
 }
 
+int am_integrate_numeric(acb_t res, Value *f, int x, Value *a, Value *b, slong digits);
+int am_eval_acb(acb_t out, Value *f, int x, const acb_t z, int analytic, slong prec);
+Value *b_limit(Value **a, int n);
+static Value *indefinite(Value **a, int n);
+
+static int is_inf(Value *v) { return v->kind == V_NUM && ca_is_special(v->num, am_ca); }
+
+/* a ball as a decimal string with only correct digits */
+static Value *ball_value(const acb_t r, slong digits) {
+    char *re = arb_get_str(acb_realref(r), digits, ARB_STR_NO_RADIUS);
+    Value *v;
+    if (arb_is_zero(acb_imagref(r)) || arb_contains_zero(acb_imagref(r))) v = v_str(re);
+    else {
+        char *im = arb_get_str(acb_imagref(r), digits, ARB_STR_NO_RADIUS);
+        char *s = malloc(strlen(re) + strlen(im) + 8);
+        sprintf(s, "%s + %s*I", re, im);
+        v = v_str(s);
+        free(s); flint_free(im);
+    }
+    flint_free(re);
+    return v;
+}
+
+/* built from x, constants, exp, sin and cos with only constants below the line: continuous everywhere */
+static int entire(Value *F, int x) {
+    if (F->kind == V_NUM) return 1;
+    if (F->kind != V_RF) return 0;
+    Value *D = rf_den_value(F);
+    if (!am_free_of(D, x)) return 0;
+    int used[AM_MAXVARS] = {0};
+    fmpz_mpoly_q_used_vars(used, F->rf, am_mp);
+    for (int i = 0; i < am_nvars; i++) {
+        if (!used[i] || !am_vars[i].kernel || am_vars[i].numval || am_free_of(am_gen(i), x)) continue;
+        const char *h = am_vars[i].head;
+        if (!h || (strcmp(h, "exp") && strcmp(h, "sin") && strcmp(h, "cos")) || !entire(am_vars[i].args[0], x)) return 0;
+    }
+    return 1;
+}
+
+/* integrate(f, x, a, b) */
+static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
+    int x = am_gen_of(xv);
+    if (!am_free_of(a, x) || !am_free_of(b, x)) am_fail("integrate: the limits must not depend on %s", am_varnames[x]);
+    int finite = !is_inf(a) && !is_inf(b);
+    /* a rational integrand with a pole on the interval does not have an integral */
+    fmpq_poly_t n, d; fmpq_poly_init(n); fmpq_poly_init(d);
+    int rational = as_rational(f, x, n, d);
+    if (rational && fmpq_poly_degree(d) > 0) {
+        fmpz_poly_t dz; fmpz_poly_init(dz); fmpq_poly_get_numerator(dz, d);
+        slong deg = fmpz_poly_degree(dz);
+        qqbar_ptr r = _qqbar_vec_init(deg);
+        qqbar_roots_fmpz_poly(r, dz, 0);
+        for (slong k = 0; k < deg; k++) {
+            if (!qqbar_is_real(r + k)) continue;
+            Value *rv = v_num(); ca_set_qqbar(rv->num, r + k, am_ca);
+            Value *lo = a, *hi = b;
+            if (finite && a->kind == V_NUM && b->kind == V_NUM && ca_check_gt(a->num, b->num, am_ca) == T_TRUE) { lo = b; hi = a; }
+            int above = is_inf(lo) ? (ca_check_is_neg_inf(lo->num, am_ca) == T_TRUE) : (lo->kind == V_NUM && ca_check_ge(rv->num, lo->num, am_ca) == T_TRUE);
+            int below = is_inf(hi) ? (ca_check_is_pos_inf(hi->num, am_ca) == T_TRUE) : (hi->kind == V_NUM && ca_check_le(rv->num, hi->num, am_ca) == T_TRUE);
+            if (above && below) {
+                char *rs = v_str_of(rv);
+                am_status(S_PROVED, "the integrand has a pole at %s = %s on the interval, where it is not integrable", am_varnames[x], rs);
+                char *js = am_json_str(rs); am_fact("pole", "%s", js); free(js); free(rs);
+                am_fact("converges", "false");
+                _qqbar_vec_clear(r, deg); fmpz_poly_clear(dz);
+                return v_str("diverges");
+            }
+        }
+        _qqbar_vec_clear(r, deg); fmpz_poly_clear(dz);
+    }
+    fmpq_poly_clear(n); fmpq_poly_clear(d);
+    /* the antiderivative, then its limits at the ends */
+    Value *ia[2] = {f, xv};
+    Value *F = indefinite(ia, 2);
+    Status inner = am_status_get();
+    char inner_why[512]; snprintf(inner_why, sizeof inner_why, "the antiderivative's check was not complete");
+    acb_t num; acb_init(num);
+    int have_num = finite && am_integrate_numeric(num, f, x, a, b, 30);
+    if (unevaluated(F)) {
+        if (!have_num) { acb_clear(num); am_fail("integrate: no antiderivative found and no certified numerical value (an infinite interval, or a singularity on it)"); }
+        am_account_reset();
+        am_status(S_CERTIFIED, "no antiderivative found; the value by certified numerical integration (Arb), every digit shown correct");
+        am_fact("antiderivative_found", "false");
+        Value *r = ball_value(num, 30);
+        acb_clear(num);
+        return r;
+    }
+    Value *la[4] = {F, xv, b, v_str("-")}, *lb[4] = {F, xv, a, v_str("+")};
+    Value *Fb = b_limit(la, is_inf(b) ? 3 : 4), *Fa = b_limit(lb, is_inf(a) ? 3 : 4);
+    if (Fb->kind == V_STR || Fa->kind == V_STR) am_fail("integrate: the antiderivative has no limit at an end of the interval");
+    Value *exact = am_reevaluate(v_sub(Fb, Fa));
+    am_status_clear();                                         /* the definite integral gets its own verdict */
+    if (inner == S_PROBABLE || inner == S_UNKNOWN || inner == S_NUMERIC) am_status(inner, "%s", inner_why);
+    if (exact->kind == V_NUM && ca_is_special(exact->num, am_ca)) {
+        am_status(S_PROVED, "the antiderivative tends to infinity at an end of the interval");
+        am_fact("converges", "false");
+        acb_clear(num);
+        return v_str("diverges");
+    }
+    if (have_num) {
+        acb_t ex; acb_init(ex);
+        int ok = am_eval_acb(ex, exact, x, ex, 0, 128);
+        if (ok && !acb_overlaps(ex, num)) {                     /* the antiderivative jumps inside the interval */
+            am_account_reset();
+            am_status(S_CERTIFIED, "the antiderivative found is not continuous on the interval; the value by certified numerical integration (Arb)");
+            am_fact("antiderivative_continuous", "false");
+            Value *r = ball_value(num, 30);
+            acb_clear(ex); acb_clear(num);
+            return r;
+        }
+        acb_clear(ex);
+        if (rational) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, continuous on the interval (no pole there); agrees with certified numerical integration");
+        else if (entire(F, x)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative built from polynomials, exp, sin and cos, hence continuous; agrees with certified numerical integration");
+        else am_status(S_PROBABLE, "F(b) - F(a) for a checked antiderivative; agrees with certified numerical integration to 30 digits, its continuity on the interval is not proved");
+        am_fact("numerical_check", "\"agrees to 30 digits (Arb)\"");
+    } else if (rational) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative, continuous on the interval (no pole there)");
+    else if (entire(F, x)) am_status(S_PROVED, "F(b) - F(a) for a checked antiderivative built from polynomials, exp, sin and cos, hence continuous");
+    else {
+        am_status(S_EXACT, "F(b) - F(a) for a checked antiderivative; continuity on the interval not checked (no certified numerical value)");
+        am_fact("continuity_checked", "false");
+    }
+    acb_clear(num);
+    return exact;
+}
+
 Value *b_integrate(Value **a, int n) {
-    if (n != 2) am_fail("integrate(f, x) takes the integrand and the variable");
+    if (n == 4) {
+        int g = am_gen_of(a[1]);
+        if (g < 0 || am_vars[g].kernel) am_fail("integrate: the second argument must be a variable");
+        return definite(a[0], a[1], a[2], a[3]);
+    }
+    return indefinite(a, n);
+}
+
+static Value *indefinite(Value **a, int n) {
+    if (n != 2) am_fail("integrate(f, x) or integrate(f, x, a, b)");
     int x = -1;
     {
         int g = am_gen_of(a[1]);
@@ -436,7 +571,7 @@ Value *b_integrate(Value **a, int n) {
     Value *f = a[0];
     if (f->kind == V_LIST) {
         Value *r = v_list(f->n);
-        for (int i = 0; i < f->n; i++) { Value *b[2] = {f->items[i], a[1]}; r->items[i] = b_integrate(b, 2); }
+        for (int i = 0; i < f->n; i++) { Value *b[2] = {f->items[i], a[1]}; r->items[i] = indefinite(b, 2); }
         return r;
     }
     Value *F = integrate_any(f, x, 0);

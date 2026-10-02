@@ -18,3 +18,7 @@ antiderivative(sin(u)*cos(u), x) := sin(u)^2/(2*diff(u, x)) if linear(u, x)
 antiderivative(sin(u)^2, x) := u/(2*diff(u, x)) - sin(u)*cos(u)/(2*diff(u, x)) if linear(u, x)
 antiderivative(cos(u)^2, x) := u/(2*diff(u, x)) + sin(u)*cos(u)/(2*diff(u, x)) if linear(u, x)
 antiderivative(exp(u)^n, x) := exp(u)^n/(n*diff(u, x)) if linear(u, x)
+
+# powers of a square root of a linear argument (n = -1 is 1/sqrt(u))
+antiderivative(sqrt(u)^n, x) := 2*sqrt(u)^(n + 2)/((n + 2)*diff(u, x)) if linear(u, x) and n != -2
+antiderivative(sqrt(u)^n, x) := log(u)/diff(u, x) if linear(u, x) and n == -2

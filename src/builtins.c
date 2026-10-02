@@ -540,7 +540,8 @@ static Value *b_subs(Value **a, int n) {
             val[var_of(eqs[i]->items[0])] = eqs[i]->items[1];
         }
     }
-    for (int i = 0; i < am_nvars; i++) {                         /* function terms: their arguments substituted, then re-evaluated */
+    int n0 = am_nvars;                                           /* only the terms there now: new ones are already substituted */
+    for (int i = 0; i < n0; i++) {                               /* function terms: their arguments substituted, then re-evaluated */
         if (!am_vars[i].kernel) continue;
         if (am_vars[i].numval) { val[i] = am_vars[i].numval; continue; }
         Value **ka = malloc((size_t)(am_vars[i].nargs ? am_vars[i].nargs : 1) * sizeof *ka);
@@ -802,6 +803,9 @@ static Value *b_binomial(Value **a, int n) {
 }
 
 Value *b_integrate(Value **a, int n);
+Value *b_series(Value **a, int n);
+Value *b_taylor(Value **a, int n);
+Value *b_limit(Value **a, int n);
 
 static Value *b_free(Value **a, int n) {
     need(n, 2, 2, "free");
@@ -815,8 +819,11 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"roots", b_roots, "roots(p[, x])", "every complex root of a polynomial in one variable, as exact algebraic numbers, each once"},
     {"realroots", b_realroots, "realroots(p[, x])", "the real roots of a polynomial, exactly"},
     {"solve", b_solve, "solve(eq, x) | solve([eqs], [vars])", "exact solutions of one polynomial equation, or of a polynomial system (msolve); each solution checked by substitution"},
-    {"integrate", b_integrate, "integrate(f, x)", "an antiderivative, checked by differentiating it back; rational functions exactly (Hermite, Rothstein-Trager, arctangents), polynomials times exp/sin/cos/log/atan by parts, and the library's rules"},
+    {"integrate", b_integrate, "integrate(f, x) | integrate(f, x, a, b)", "an antiderivative, checked by differentiating it back (or the definite integral: F(b) - F(a) checked against certified numerical integration, the certified decimal when no antiderivative is found, divergence proved at a pole); rational functions exactly (Hermite, Rothstein-Trager, arctangents), polynomials times exp/sin/cos/log/atan by parts, and the library's rules"},
     {"free", b_free, "free(e, x)", "true when e does not depend on x (looking inside function terms)"},
+    {"series", b_series, "series(f, x[, a[, n]])", "the power series (Taylor or Laurent) of f at x = a (default 0) to order n (default 6), exact coefficients, written with O(...); log(x - a) kept as a symbol where it appears; the facts list the coefficients"},
+    {"taylor", b_taylor, "taylor(f, x[, a[, n]])", "the terms of the series below order n, as an expression to compute with (no O term)"},
+    {"limit", b_limit, "limit(f, x, a[, \"+\" | \"-\"])", "the limit at a (a number, oo or -oo), from the leading term of the series; one-sided with \"+\" or \"-\""},
     {"N", b_N, "N(x[, digits])", "a decimal with every digit guaranteed (default 15 digits); works on lists and equations"},
     {"diff", b_diff, "diff(f, x[, n])", "derivative (n-th) with respect to x, through sin, exp, log, f(x), ... by the chain rule"},
     {"subs", b_subs, "subs(f, x = a[, y = b]) | subs(f, [x = a, ...]) | subs(f, x, a)", "substitute values for variables; function terms are re-evaluated"},

@@ -80,6 +80,8 @@ extern int am_json, am_show;
 void am_account_reset(void);
 void am_status(Status s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));   /* weakest status wins */
 int am_status_set(void);
+Status am_status_get(void);
+void am_status_clear(void);
 void am_fact(const char *key, const char *json_fmt, ...) __attribute__((format(printf, 2, 3)));
 void am_work(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 char *am_json_str(const char *s);               /* malloc'd JSON string literal */

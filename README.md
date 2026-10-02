@@ -78,6 +78,22 @@ the check went (`proved`: the derivative equals the integrand exactly; `probable
 
 Rules can match products and powers: `antiderivative(exp(u)*sin(v), x) := ... if linear(u, x) and linear(v, x)`.
 
+## Series, limits, definite integrals
+- `series(f, x, a, n)`: Taylor or Laurent series with exact coefficients, written in ascending powers with
+  `O(...)`; the facts list the coefficients. `taylor(f, x, a, n)` gives the terms as an expression to compute with.
+  `series(tan(x), x, 0, 8)` → `x + x^3/3 + 2*x^5/15 + 17*x^7/315 + O(x^8)`.
+- `limit(f, x, a)` (a number, `oo` or `-oo`; `"+"` or `"-"` for one side): from the leading term of the series;
+  log(x − a) is kept as a symbol, one-sided limits use x = a ± t² (so half powers become whole), and an
+  exponential that is smaller or larger than every power dominates. `limit(x^x, x, 0, "+")` → 1,
+  `limit((1+1/x)^x, x, oo)` → exp(1), `limit(x^5*exp(-x), x, oo)` → 0, `limit(1/x, x, 0)` → does not exist.
+  Comparing two exponentials (`exp(x) - exp(2x)`) needs the full Gruntz algorithm and is refused for now.
+- `integrate(f, x, a, b)`: F(b) − F(a) with limits at the ends, cross-checked against Arb's certified numerical
+  integration; proved when the antiderivative is continuous on the interval (rational without poles there, or
+  built from polynomials, exp, sin, cos). A pole of a rational integrand on the interval proves divergence. With no
+  antiderivative, the certified decimal is the answer: `integrate(exp(x^2), x, 0, 1)` →
+  `1.46265174590718160880404858686  [certified]`. `integrate(1/(x^4+1), x, 0, oo)` → `pi*sqrt(2)/4  [proved]`.
+- Powers with any exponent: `x^(1/2)` is `sqrt(x)`, `x^x` is `exp(x*log(x))`.
+
 ## Deciding equality
 `a == b` subtracts and decides: exact arithmetic for numbers; for expressions, a normal form (tan = sin/cos,
 sin² + cos² = 1, sqrt(u)² = u, sqrt(D)² = D, I² = −1) that proves equality when the difference reduces to 0; a

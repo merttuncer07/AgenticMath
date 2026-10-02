@@ -42,7 +42,7 @@ void am_fail(const char *fmt, ...) {
 
 /* ---------------- tokens ---------------- */
 
-typedef enum { T_NUM, T_NAME, T_OP, T_END } TKind;
+typedef enum { T_NUM, T_NAME, T_OP, T_STR, T_END } TKind;
 typedef struct { TKind k; const char *s; size_t len; int spaced; } Tok;   /* spaced: whitespace before it */
 static Tok toks[4096];
 static int ntok, pos;
@@ -64,6 +64,12 @@ static void lex(const char *p) {
                 p += 2; while (isdigit((unsigned char)*p)) p++;
             }
             t->k = T_NUM;
+        } else if (*p == '"') {                                /* a string, for options such as limit(..., "+") */
+            p++;
+            while (*p && *p != '"') p++;
+            if (*p != '"') am_fail("a string without its closing quote");
+            p++;
+            t->k = T_STR;
         } else if (isalpha((unsigned char)*p) || *p == '_') {
             while (isalnum((unsigned char)*p) || *p == '_') p++;
             t->k = T_NAME;
@@ -94,7 +100,7 @@ static void expect(const char *op) {
 
 /* ---------------- the tree ---------------- */
 
-typedef enum { N_NUM, N_NAME, N_CALL, N_LIST, N_NEG, N_BIN, N_FACT, N_INDEX, N_AND, N_OR, N_NOT } NKind;
+typedef enum { N_NUM, N_NAME, N_CALL, N_LIST, N_NEG, N_BIN, N_FACT, N_INDEX, N_AND, N_OR, N_NOT, N_STR } NKind;
 typedef struct Node Node;
 struct Node { NKind k; char *s; size_t len; char op[3]; Node **a; int n; };
 
@@ -109,6 +115,7 @@ static Node *unary(void);
 static Node *primary(void) {
     Tok *t = peek();
     if (t->k == T_NUM) { pos++; return mk_tok(N_NUM, t); }
+    if (t->k == T_STR) { pos++; Node *n = mk(N_STR); n->s = strndup(t->s + 1, t->len - 2); n->len = t->len - 2; return n; }
     if (t->k == T_NAME) {
         pos++;
         if (at_op("(") && !peek()->spaced) {                  /* f(x): a call; x (y) is a product */
@@ -154,6 +161,7 @@ static Node *unary(void) {
 }
 static int starts_primary(void) {
     Tok *t = peek();
+    if (t->k == T_STR) return 0;
     if (t->k == T_NAME && (at_word("and") || at_word("or") || at_word("if") || at_word("not"))) return 0;
     return t->k == T_NUM || t->k == T_NAME || at_op("(");
 }
@@ -427,18 +435,21 @@ static int match(Node *p, Value *v, Frame *f) {
         return 1;
     }
     case N_BIN:
-        if (p->op[0] == '^' && !p->op[1]) {                   /* u^n matches a single generator to a power */
-            if (v->kind != V_RF || !fmpz_mpoly_is_one(fmpz_mpoly_q_denref(v->rf), am_mp)) return 0;
-            const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf);
-            if (fmpz_mpoly_length(N, am_mp) != 1) return 0;
-            fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, N, 0, am_mp);
+        if (p->op[0] == '^' && !p->op[1]) {                   /* u^n matches a generator to a power, n >= 2 or n < 0 */
+            if (v->kind != V_RF) return 0;
+            const fmpz_mpoly_struct *N = fmpz_mpoly_q_numref(v->rf), *D = fmpz_mpoly_q_denref(v->rf);
+            int inverse = fmpz_mpoly_is_one(N, am_mp);
+            const fmpz_mpoly_struct *M = inverse ? D : N;
+            if (!inverse && !fmpz_mpoly_is_one(D, am_mp)) return 0;
+            if (fmpz_mpoly_length(M, am_mp) != 1) return 0;
+            fmpz_t c; fmpz_init(c); fmpz_mpoly_get_term_coeff_fmpz(c, M, 0, am_mp);
             int one = fmpz_is_one(c); fmpz_clear(c);
             if (!one) return 0;
-            ulong ex[AM_MAXVARS]; fmpz_mpoly_get_term_exp_ui(ex, N, 0, am_mp);
+            ulong ex[AM_MAXVARS]; fmpz_mpoly_get_term_exp_ui(ex, M, 0, am_mp);
             int g = -1, cnt = 0;
             for (int i = 0; i < am_nvars; i++) if (ex[i]) { g = i; cnt++; }
-            if (cnt != 1 || ex[g] < 2) return 0;
-            Value *e = v_num(); ca_set_ui(e->num, ex[g], am_ca);
+            if (cnt != 1 || (!inverse && ex[g] < 2)) return 0;
+            Value *e = v_num(); ca_set_si(e->num, inverse ? -(slong)ex[g] : (slong)ex[g], am_ca);
             return match(p->a[0], am_gen(g), f) && match(p->a[1], e, f);
         }
         if (p->op[0] == '*' && !p->op[1]) return match_product(p, v, f);
@@ -566,12 +577,14 @@ static Value *eval_call(Node *n) {
 static Value *eval(Node *n) {
     switch (n->k) {
     case N_NUM: return number(n->s, n->len);
+    case N_STR: return v_str(n->s);
     case N_NAME: {
         Value *b = lookup(n->s);
         if (b) return b;
         if (!strcmp(n->s, "pi")) { Value *v = v_num(); ca_pi(v->num, am_ca); return v; }
         if (!strcmp(n->s, "E")) { Value *v = v_num(); ca_one(v->num, am_ca); ca_exp(v->num, v->num, am_ca); return v; }
         if (!strcmp(n->s, "I")) { Value *v = v_num(); ca_i(v->num, am_ca); return v; }
+        if (!strcmp(n->s, "oo")) { Value *v = v_num(); ca_pos_inf(v->num, am_ca); return v; }
         if (!strcmp(n->s, "true")) return v_bool(1);
         if (!strcmp(n->s, "false")) return v_bool(0);
         if (am_builtin(n->s, n->len) || has_rules(n->s)) am_fail("%s is a function: write %s(...)", n->s, n->s);

@@ -84,6 +84,8 @@ static const char *status_name(Status s) {
 }
 
 int am_status_set(void) { return status != S_NONE; }
+Status am_status_get(void) { return status; }
+void am_status_clear(void) { status = S_NONE; verdict[0] = 0; }
 
 void am_status(Status s, const char *fmt, ...) {
     if (rank(s) >= rank(status) && status != S_NONE) return;
