@@ -345,11 +345,33 @@ static void put_fexpr(Str *b, const fexpr_t e, int prec) {
     } else if (fexpr_is_builtin_call(e, FEXPR_Decimal) && fexpr_nargs(e) == 1) {
         fexpr_view_arg(a, e, 0);
         char *ds = fexpr_get_string(a); sput(b, ds); flint_free(ds);
-    } else if (fexpr_is_builtin_call(e, FEXPR_Add)) put_args(b, e, " + ", 1);
+    } else if (fexpr_is_builtin_call(e, FEXPR_Add)) {          /* a + -b is written a - b */
+        for (slong i = 0; i < fexpr_nargs(e); i++) {
+            Str t = {0, 0, 0}; sput(&t, "");
+            fexpr_view_arg(a, e, i); put_fexpr(&t, a, 1);
+            if (i) sput(b, t.s[0] == '-' ? " - " : " + ");
+            sput(b, i && t.s[0] == '-' ? t.s + 1 : t.s);
+            free(t.s);
+        }
+    }
     else if (fexpr_is_builtin_call(e, FEXPR_Sub)) {
         fexpr_view_arg(a, e, 0); put_fexpr(b, a, 1);
         for (slong i = 1; i < fexpr_nargs(e); i++) { sput(b, " - "); fexpr_view_arg(a, e, i); put_fexpr(b, a, 2); }
-    } else if (fexpr_is_builtin_call(e, FEXPR_Mul)) put_args(b, e, "*", 2);
+    } else if (fexpr_is_builtin_call(e, FEXPR_Mul)) {          /* -1*a is written -a */
+        fexpr_view_arg(a, e, 0);
+        if (fexpr_is_integer(a) && fexpr_nargs(e) >= 2) {
+            fmpz_t c; fmpz_init(c); fexpr_get_fmpz(c, a);
+            int m1 = fmpz_equal_si(c, -1);
+            fmpz_clear(c);
+            if (m1) {
+                sput(b, "-");
+                for (slong i = 1; i < fexpr_nargs(e); i++) { if (i > 1) sput(b, "*"); fexpr_view_arg(a, e, i); put_fexpr(b, a, 2); }
+                if (par) sput(b, ")");
+                return;
+            }
+        }
+        put_args(b, e, "*", 2);
+    }
     else if (fexpr_is_builtin_call(e, FEXPR_Div)) {
         fexpr_view_arg(a, e, 0); put_fexpr(b, a, 2); sput(b, "/");
         fexpr_view_arg(a, e, 1); put_fexpr(b, a, 3);
@@ -378,11 +400,21 @@ static void put_value(Str *b, const Value *v) {
             break;
         }
         if (CA_IS_QQ(v->num, am_ca)) { char *s = fmpq_get_str(NULL, 10, CA_FMPQ(v->num)); sput(b, s); flint_free(s); break; }
+        {   /* pi, exp(2), log(3), ... as generators: printed like any expression */
+            Value *r = am_field_rf(v);
+            if (r && r->kind == V_RF) { put_value(b, r); break; }
+            if (r && r->kind == V_NUM && CA_IS_QQ(r->num, am_ca)) { put_value(b, r); break; }
+        }
         fexpr_t e; fexpr_init(e);
         qqbar_t q; qqbar_init(q);
         if (ca_get_qqbar(q, v->num, am_ca)) {             /* algebraic: a radical formula, else the polynomial and a root */
-            if (qqbar_degree(q) > 4 || !qqbar_get_fexpr_formula(e, q, QQBAR_FORMULA_GAUSSIANS | QQBAR_FORMULA_QUADRATICS))
-                qqbar_get_fexpr_root_nearest(e, q);
+            int ok = qqbar_degree(q) <= 4 && qqbar_get_fexpr_formula(e, q, QQBAR_FORMULA_GAUSSIANS | QQBAR_FORMULA_QUADRATICS);
+            if (!ok && qqbar_degree(q) <= 8 && qqbar_get_fexpr_formula(e, q, QQBAR_FORMULA_ALL)) {   /* radicals, when short */
+                char *s = fexpr_get_str(e);
+                ok = strlen(s) < 160;
+                flint_free(s);
+            }
+            if (!ok) qqbar_get_fexpr_root_nearest(e, q);
         } else ca_get_fexpr(e, v->num, 0, am_ca);
         qqbar_clear(q);
         put_fexpr(b, e, 0);

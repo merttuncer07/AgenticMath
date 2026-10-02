@@ -843,7 +843,10 @@ static Value *b_solve(Value **a, int n) {
     }
     if (ne == 1 && nvar == 1) {
         Value *num = eqs[0]->kind == V_RF ? rf_from_mpoly(fmpz_mpoly_q_numref(eqs[0]->rf)) : eqs[0];
-        return roots_of(num, vars[0], 0, 1);
+        int vs[AM_MAXVARS], k = used_vars(num, vs);
+        if (k == 1 && vs[0] == vars[0] && eqs[0]->kind == V_RF && fmpz_mpoly_is_fmpz(fmpz_mpoly_q_denref(eqs[0]->rf), am_mp))
+            return roots_of(num, vars[0], 0, 1);
+        return am_solve1(eqs[0], vars[0]);
     }
     return solve_system(eqs, ne, vars, nvar);
 }
@@ -877,7 +880,7 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } TABL
     {"factor", b_factor, "factor(n) | factor(p)", "prime factors of a whole number or fraction (primes proved); irreducible factors of a polynomial over Q"},
     {"roots", b_roots, "roots(p[, x])", "every complex root of a polynomial in one variable, as exact algebraic numbers, each once"},
     {"realroots", b_realroots, "realroots(p[, x])", "the real roots of a polynomial, exactly"},
-    {"solve", b_solve, "solve(eq, x) | solve([eqs], [vars])", "exact solutions of one polynomial equation, or of a polynomial system (msolve); each solution checked by substitution"},
+    {"solve", b_solve, "solve(eq, x) | solve([eqs], [vars])", "every solution of one equation (polynomials exactly; symbolic coefficients up to degree 2 by formula; exp, log, sqrt and trigonometric terms inverted, with integer parameters n1, n2, ... for periodic families; the fact real_solutions lists the real ones), or of a polynomial system (msolve); each solution checked by substitution; == is read as = here"},
     {"integrate", b_integrate, "integrate(f, x) | integrate(f, x, a, b)", "an antiderivative, checked by differentiating it back (or the definite integral: F(b) - F(a) checked against certified numerical integration, the certified decimal when no antiderivative is found, divergence proved at a pole); rational functions exactly (Hermite, Rothstein-Trager, arctangents), polynomials times exp/sin/cos/log/atan by parts, and the library's rules"},
     {"free", b_free, "free(e, x)", "true when e does not depend on x (looking inside function terms)"},
     {"series", b_series, "series(f, x[, a[, n]])", "the power series (Taylor or Laurent) of f at x = a (default 0) to order n (default 6), exact coefficients, written with O(...); log(x - a) kept as a symbol where it appears; the facts list the coefficients"},

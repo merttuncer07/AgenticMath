@@ -594,7 +594,31 @@ Value *am_reevaluate(Value *v) {
     return am_subs_rf(v, val);
 }
 
+/* fn(ctx) with errors caught: 1 and *out on success, 0 (the interpreter's state restored) on failure */
+int am_try(Value *(*fn)(void *), void *ctx, Value **out) {
+    jmp_buf saved; memcpy(saved, am_on_error, sizeof saved);
+    int d = depth, ic = in_condition, mute = am_fact_mute;
+    Frame *f = frame;
+    if (setjmp(am_on_error)) {
+        memcpy(am_on_error, saved, sizeof saved);
+        depth = d; in_condition = ic; frame = f; am_fact_mute = mute;
+        return 0;
+    }
+    Value *v = fn(ctx);
+    memcpy(am_on_error, saved, sizeof saved);
+    if (out) *out = v;
+    return 1;
+}
+
+/* solve(x^2 == 4, x): in the arguments of an equation solver, '==' is read as '=' (an equation, not a test) */
+static void eq_as_equation(Node *n) {
+    if (n->k == N_BIN && !strcmp(n->op, "==")) strcpy(n->op, "=");
+    else if (n->k == N_LIST) for (int i = 0; i < n->n; i++) eq_as_equation(n->a[i]);
+}
+
 static Value *eval_call(Node *n) {
+    if (!strcmp(n->s, "solve") || !strcmp(n->s, "dsolve") || !strcmp(n->s, "nsolve") || !strcmp(n->s, "roots") || !strcmp(n->s, "realroots"))
+        for (int i = 0; i < n->n; i++) eq_as_equation(n->a[i]);
     /* special forms: their arguments are not all evaluated first */
     if (!strcmp(n->s, "if")) {
         if (n->n != 3) am_fail("if(condition, then, else) takes three arguments");

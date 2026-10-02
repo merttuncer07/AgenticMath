@@ -75,6 +75,7 @@ Value *am_normalize_exp(Value *v);
 int am_lead_sign(const Value *v);
 Value *am_expand_angles(Value *v);                /* one exp per term, none below the line (monomial denominators) */   /* free the slots no kept value uses */
 Value *am_number_rf(const Value *num);            /* an irrational number among variables, canonically */
+Value *am_field_rf(const Value *num);             /* a transcendental number over its generators (pi, exp(2), ...), or NULL */
 void am_reduce_squares(Value *v);                 /* sqrt(D)^2 -> D, I^2 -> -1 in a rational function */
 Value *am_normal_form(Value *v);                   /* tan as sin/cos, sin^2 + cos^2 = 1 reduced */
 int am_zero_test(Value *v, char *witness, size_t wlen);   /* 1 zero, 0 not (witness point), 2 zero at random points, -1 undecided */
@@ -100,6 +101,8 @@ void am_init(void);
 int am_mcp(void);
 void am_load_library(void);                     /* the library written in the language (lib/ *.am, built in) */
 Value *am_call(const char *name, Value **args, int n);
+int am_try(Value *(*fn)(void *), void *ctx, Value **out);   /* errors caught: 0 when fn failed */
+Value *am_solve1(Value *e, int x);              /* one equation e = 0 in x (solve.c) */
 Value *am_reevaluate(Value *v);                 /* function terms evaluated again: numbers back to numbers */
 Value *am_subs_rf(const Value *f, Value **val);  /* values for the generators */
 int am_free_of(const Value *v, int x);

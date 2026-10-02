@@ -217,11 +217,95 @@ static Value *square_root_gen(slong D) {
     return g;
 }
 
+/* the number Calcium's extension generator stands for */
+static int ext_value(ca_t res, ca_ext_ptr e) {
+    if (CA_EXT_IS_QQBAR(e)) { ca_set_qqbar(res, CA_EXT_QQBAR(e), am_ca); return 1; }
+    slong n = CA_EXT_FUNC_NARGS(e);
+    if (n == 0) {
+        ca_field_srcptr K = _ca_ctx_get_field_const(am_ca, CA_EXT_HEAD(e));
+        _ca_make_field_element(res, K, am_ca);
+        fmpz_mpoly_q_gen(CA_MPOLY_Q(res), 0, CA_FIELD_MCTX(K, am_ca));
+        return 1;
+    }
+    if (n == 1) { _ca_function_fx(res, CA_EXT_HEAD(e), CA_EXT_FUNC_ARGS(e), am_ca); return 1; }
+    if (n == 2) { _ca_function_fxy(res, CA_EXT_HEAD(e), CA_EXT_FUNC_ARGS(e), CA_EXT_FUNC_ARGS(e) + 1, am_ca); return 1; }
+    return 0;
+}
+
+/* log(q) for a positive rational q other than a prime: the sum of e log(p) over its prime factors p^e */
+static Value *log_of_rational(const ca_t a) {
+    fmpq_t q; fmpq_init(q);
+    if (!ca_get_fmpq(q, a, am_ca) || fmpq_sgn(q) <= 0 || fmpz_bits(fmpq_numref(q)) > 64 || fmpz_bits(fmpq_denref(q)) > 64) { fmpq_clear(q); return NULL; }
+    fmpz_factor_t F[2]; fmpz_factor_init(F[0]); fmpz_factor_init(F[1]);
+    fmpz_factor(F[0], fmpq_numref(q)); fmpz_factor(F[1], fmpq_denref(q));
+    Value *r = NULL;
+    if (!(F[0]->num == 1 && F[0]->exp[0] == 1 && F[1]->num == 0)) {       /* log(p) itself stays */
+        r = v_num();
+        for (int w = 0; w < 2; w++) for (slong i = 0; i < F[w]->num; i++) {
+            Value *lp = v_num(); ca_set_fmpz(lp->num, F[w]->p + i, am_ca); ca_log(lp->num, lp->num, am_ca);
+            Value *e = v_num(); ca_set_si(e->num, w ? -(slong)F[w]->exp[i] : (slong)F[w]->exp[i], am_ca);
+            r = v_add(r, v_mul(e, am_number_kernel(lp)));
+        }
+    }
+    fmpz_factor_clear(F[0]); fmpz_factor_clear(F[1]); fmpq_clear(q);
+    return r;
+}
+
+/* a number of a field Q(pi, exp(2), I, ...) as a rational function of its generators, each a generator here:
+   2*pi*I is 2 times pi times I, not one opaque term */
+Value *am_field_rf(const Value *num) {
+    if (CA_IS_SPECIAL(num->num)) return NULL;
+    ca_field_srcptr K = CA_FIELD(num->num, am_ca);
+    if (!CA_FIELD_IS_GENERIC(K)) return NULL;
+    slong len = CA_FIELD_LENGTH(K);
+    if (len > 8) return NULL;
+    const fmpz_mpoly_ctx_struct *mctx = CA_FIELD_MCTX(K, am_ca);
+    const fmpz_mpoly_q_struct *q = CA_MPOLY_Q(num->num);
+    if (len == 1 && fmpz_mpoly_is_gen(fmpz_mpoly_q_numref(q), 0, mctx) && fmpz_mpoly_is_one(fmpz_mpoly_q_denref(q), mctx)) {
+        ca_ext_ptr e = CA_FIELD_EXT_ELEM(K, 0);
+        return CA_EXT_HEAD(e) == CA_Log ? log_of_rational(CA_EXT_FUNC_ARGS(e)) : NULL;
+    }
+    Value *g[8];
+    for (slong i = 0; i < len; i++) {                         /* sin(1) is exp(I) inside Calcium: keep its own form */
+        ca_ext_ptr e = CA_FIELD_EXT_ELEM(K, i);
+        if (!CA_EXT_IS_QQBAR(e) && CA_EXT_FUNC_NARGS(e) >= 1 && ca_check_is_real(CA_EXT_FUNC_ARGS(e), am_ca) != T_TRUE) return NULL;
+    }
+    for (slong i = 0; i < len; i++) {
+        Value *v = v_num();
+        if (!ext_value(v->num, CA_FIELD_EXT_ELEM(K, i))) return NULL;
+        ca_ext_ptr e = CA_FIELD_EXT_ELEM(K, i);
+        g[i] = CA_EXT_IS_QQBAR(e) ? am_number_rf(v) : NULL;
+        if (!g[i] && CA_EXT_HEAD(e) == CA_Log) g[i] = log_of_rational(CA_EXT_FUNC_ARGS(e));
+        if (!g[i]) g[i] = am_number_kernel(v);
+    }
+    Value *part[2];
+    for (int w = 0; w < 2; w++) {
+        const fmpz_mpoly_struct *p = w ? fmpz_mpoly_q_denref(q) : fmpz_mpoly_q_numref(q);
+        Value *s = v_num();
+        fmpz_t c; fmpz_init(c);
+        ulong ex[8];
+        for (slong t = 0; t < fmpz_mpoly_length(p, mctx); t++) {
+            fmpz_mpoly_get_term_coeff_fmpz(c, p, t, mctx);
+            fmpz_mpoly_get_term_exp_ui(ex, p, t, mctx);
+            Value *m = v_num(); ca_set_fmpz(m->num, c, am_ca);
+            for (slong i = 0; i < len; i++) for (ulong k = 0; k < ex[i]; k++) m = v_mul(m, g[i]);
+            s = v_add(s, m);
+        }
+        fmpz_clear(c);
+        part[w] = s;
+    }
+    return v_div(part[0], part[1]);
+}
+
 /* a quadratic irrational as a + b sqrt(D) (with I for D < 0), so that sqrt(2)*x + sqrt(8)*x is 3*sqrt(2)*x */
 Value *am_number_rf(const Value *num) {
     qqbar_t q; qqbar_init(q);
     int alg = ca_get_qqbar(q, num->num, am_ca);
-    if (!alg || qqbar_degree(q) != 2) { qqbar_clear(q); return am_number_kernel(num); }
+    if (!alg || qqbar_degree(q) != 2) {
+        qqbar_clear(q);
+        Value *r = alg ? NULL : am_field_rf(num);
+        return r ? r : am_number_kernel(num);
+    }
     const fmpz *c = QQBAR_COEFFS(q);                         /* c0 + c1 x + c2 x^2 */
     fmpz_t disc, s, D, t; fmpz_init(disc); fmpz_init(s); fmpz_init(D); fmpz_init(t);
     fmpz_mul(disc, c + 1, c + 1);
