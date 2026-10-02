@@ -199,6 +199,44 @@ static int exp_multiples(const fmpz_mpoly_t f, int x, int *ks, int nk, Cands *ou
 
 static Value *from_mpoly(const fmpz_mpoly_t p);
 
+/* a polynomial in sin(u) and cos(u): t = tan(u/2), sin = 2t/(1 + t^2), cos = (1 - t^2)/(1 + t^2), a polynomial in t;
+   u = 2 atan(t) + 2 pi n, and u = pi + 2 pi n (t infinite) is tried as well; all checked later */
+static int half_angle(const fmpz_mpoly_t f, int x, int *ks, int nk, Cands *out, int depth) {
+    if (nk != 2) return 0;
+    int sv = -1, cv = -1;
+    for (int i = 0; i < 2; i++) {
+        const char *h = am_vars[ks[i]].head;
+        if (!h || am_vars[ks[i]].nargs != 1) return 0;
+        if (!strcmp(h, "sin")) sv = ks[i]; else if (!strcmp(h, "cos")) cv = ks[i]; else return 0;
+    }
+    if (sv < 0 || cv < 0) return 0;
+    char *a1 = v_str_of(am_vars[sv].args[0]), *a2 = v_str_of(am_vars[cv].args[0]);
+    int same = !strcmp(a1, a2); free(a1); free(a2);
+    if (!same) return 0;
+    Value *u = am_vars[sv].args[0];
+    int t = am_var_index("t_h", 3);
+    Value *T = am_gen(t), *one = num_si(1), *d = v_add(one, v_mul(T, T));
+    Value **val = malloc(AM_MAXVARS * sizeof(Value *));
+    for (int i = 0; i < am_nvars; i++) val[i] = am_gen(i);
+    val[sv] = v_div(v_mul(num_si(2), T), d);
+    val[cv] = v_div(v_sub(one, v_mul(T, T)), d);
+    Value *q = am_subs_rf(from_mpoly(f), val);
+    free(val);
+    Value *pi = v_num(); ca_pi(pi->num, am_ca);
+    Value *n = new_param(), *two_pi_n = v_mul(v_mul(num_si(2), pi), n);
+    if (q->kind == V_RF && !am_free_of(q, t)) {
+        Cands ts = {0};
+        poly_roots(fmpz_mpoly_q_numref(q->rf), t, &ts);
+        for (int i = 0; i < ts.n; i++) {
+            Value *ang = v_add(v_mul(num_si(2), call1("atan", ts.v[i])), two_pi_n);
+            solve_in(v_sub(u, ang), x, out, depth + 1);
+        }
+        free(ts.v);
+    }
+    solve_in(v_sub(u, v_add(pi, two_pi_n)), x, out, depth + 1);   /* t infinite: kept only if it checks */
+    return 1;
+}
+
 /* c0 + sum n_i log(u_i) = 0 with whole n_i: exp(c0) prod u_i^n_i = 1 (a superset of the solutions: checked later) */
 static int logs_combined(const fmpz_mpoly_t f, int x, Cands *out, int depth) {
     Value *c0 = num_si(0), *prod = num_si(1);
@@ -277,6 +315,7 @@ static void solve_in(Value *e, int x, Cands *out, int depth) {
             continue;
         }
         if (!bare && exp_multiples(f, x, ks, nk, out, depth)) continue;
+        if (!bare && half_angle(f, x, ks, nk, out, depth)) continue;
         if (logs_combined(f, x, out, depth)) continue;
         if (sqrt_squared(f, x, ks, nk, out, depth)) continue;
         fmpz_mpoly_factor_clear(fac, am_mp);
@@ -325,6 +364,33 @@ Value *am_solve1(Value *e, int x) {
     char reals[4096]; size_t rl = 0; int nreal = 0, realknown = 1;
     rl += (size_t)snprintf(reals + rl, sizeof reals - rl, "[");
     for (int i = 0; i < c.n; i++) {
+        {   /* the same family as an earlier one: the difference is a whole number of the parameter's steps */
+            int dup = 0;
+            for (int j = 0; j < i && !dup && c.v[j]; j++) for (int p = 0; p < nparams && !dup; p++) {
+                Value *da[2] = {c.v[i], am_gen(params[p])};
+                Value *step = am_call("diff", da, 2);
+                if (!am_free_of(step, params[p]) || (step->kind == V_NUM && ca_check_is_zero(step->num, am_ca) == T_TRUE)) continue;
+                Value *q = am_normal_form(am_reevaluate(v_div(v_sub(c.v[i], c.v[j]), step)));
+                fmpq_t r; fmpq_init(r);
+                if (v_is_rational(q, r) && fmpz_is_one(fmpq_denref(r))) dup = 1;
+                fmpq_clear(r);
+            }
+            if (dup) continue;
+        }
+        {   /* sin(u)/cos(u), from the normal form, is written tan(u) */
+            Value *cv = c.v[i];
+            if (cv->kind == V_RF && fmpz_mpoly_length(fmpz_mpoly_q_numref(cv->rf), am_mp) == 1 && fmpz_mpoly_length(fmpz_mpoly_q_denref(cv->rf), am_mp) == 1) {
+                Value *nv = v_rf(), *dv = v_rf();
+                fmpz_mpoly_set(fmpz_mpoly_q_numref(nv->rf), fmpz_mpoly_q_numref(cv->rf), am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(nv->rf), am_mp);
+                fmpz_mpoly_set(fmpz_mpoly_q_numref(dv->rf), fmpz_mpoly_q_denref(cv->rf), am_mp); fmpz_mpoly_one(fmpz_mpoly_q_denref(dv->rf), am_mp);
+                int sg = am_gen_of(nv), cg = am_gen_of(dv);
+                if (sg >= 0 && cg >= 0 && am_vars[sg].head && am_vars[cg].head && !strcmp(am_vars[sg].head, "sin") && !strcmp(am_vars[cg].head, "cos")) {
+                    char *a1 = v_str_of(am_vars[sg].args[0]), *a2 = v_str_of(am_vars[cg].args[0]);
+                    if (!strcmp(a1, a2)) c.v[i] = am_kernel_value("tan", am_vars[sg].args, 1);
+                    free(a1); free(a2);
+                }
+            }
+        }
         int v = am_solve_noverify ? 1 : verify(e, x, c.v[i]);
         if (v == 0) { dropped++; continue; }
         if (v == -1) worst = -1; else if (v == 2 && worst == 1) worst = 2;

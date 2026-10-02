@@ -133,6 +133,24 @@ static Value *ca_apply(Value **a, int n, CaFn f, const char *name) {
         fmpq_t q; fmpq_init(q);
         int rat = v_is_rational(a[0], q);
         fmpq_clear(q);
+        if (!rat && (!strcmp(name, "atan") || !strcmp(name, "asin") || !strcmp(name, "acos"))) {
+            /* atan(tan(c)) = c for real c in (-pi/2, pi/2); asin(sin(c)) on [-pi/2, pi/2]; acos(cos(c)) on [0, pi] */
+            int g = am_gen_of(a[0]);
+            const char *inv = !strcmp(name, "atan") ? "tan" : !strcmp(name, "asin") ? "sin" : "cos";
+            if (g >= 0 && am_vars[g].head && !strcmp(am_vars[g].head, inv) && am_vars[g].nargs == 1) {
+                Value *c = am_reevaluate(am_vars[g].args[0]);
+                if (c->kind == V_NUM && ca_check_is_real(c->num, am_ca) == T_TRUE) {
+                    ca_t lo, hi; ca_init(lo, am_ca); ca_init(hi, am_ca);
+                    ca_pi(hi, am_ca);
+                    if (strcmp(name, "acos")) { ca_div_ui(hi, hi, 2, am_ca); ca_neg(lo, hi, am_ca); } else ca_zero(lo, am_ca);
+                    int open = !strcmp(name, "atan");
+                    truth_t t1 = open ? ca_check_gt(c->num, lo, am_ca) : ca_check_ge(c->num, lo, am_ca);
+                    truth_t t2 = open ? ca_check_lt(c->num, hi, am_ca) : ca_check_le(c->num, hi, am_ca);
+                    ca_clear(lo, am_ca); ca_clear(hi, am_ca);
+                    if (t1 == T_TRUE && t2 == T_TRUE) return c;
+                }
+            }
+        }
         if (!rat) {                                         /* sin(x): a function term; sin(-u) = -sin(u), cos(-u) = cos(u) */
             if (am_lead_sign(a[0]) < 0) {
                 int odd = !strcmp(name, "sin") || !strcmp(name, "tan") || !strcmp(name, "atan") || !strcmp(name, "asin");
