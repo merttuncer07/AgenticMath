@@ -824,6 +824,14 @@ static Value *definite(Value *f, Value *xv, Value *a, Value *b) {
 }
 
 Value *b_integrate(Value **a, int n) {
+    if (n == 2 && a[1]->kind == V_LIST && a[1]->n == 3) {     /* integrate(f, [x, a, b]) */
+        Value *b[4] = {a[0], a[1]->items[0], a[1]->items[1], a[1]->items[2]};
+        return b_integrate(b, 4);
+    }
+    if (n == 3 && a[2]->kind == V_LIST && a[2]->n == 2) {     /* integrate(f, x, [a, b]) */
+        Value *b[4] = {a[0], a[1], a[2]->items[0], a[2]->items[1]};
+        return b_integrate(b, 4);
+    }
     if (n == 4) {
         int g = am_gen_of(a[1]);
         if (g < 0 || am_vars[g].kernel) { char *s_ = v_str_of(a[1]); am_fail("integrate: the second argument must be a variable (got %s)", s_); }

@@ -578,6 +578,20 @@ static Value *diff_once(Value *f, int x) {
     return v_div(v_sub(v_mul(dN, Dv), v_mul(Nv, dpoly(D, x))), v_mul(Dv, Dv));
 }
 static Value *b_diff(Value **a, int n) {
+    if (n >= 4 || (n == 3 && a[2]->kind == V_RF)) {            /* diff(f, x, y, ...): one variable after another */
+        Value *f = a[0];
+        for (int i = 1; i < n; i++) {
+            if (a[i]->kind == V_NUM) {                         /* diff(f, x, 2, y): x twice, then y */
+                if (i == 1) am_fail("diff: a variable before an order");
+                slong k = get_si(a[i], "the order");
+                for (slong j = 1; j < k; j++) { Value *args[2] = {f, a[i - 1]}; f = am_call("diff", args, 2); }
+                continue;
+            }
+            Value *args[2] = {f, a[i]};
+            f = am_call("diff", args, 2);
+        }
+        return f;
+    }
     need(n, 1, 3, "diff");
     int x = main_var(a[0], a, n, 1, "diff");
     slong k = n > 2 ? get_si(a[2], "the order") : 1;

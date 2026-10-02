@@ -199,6 +199,113 @@ static Value *b_len(Value **a, int n) {
     return num_si(a[0]->kind == V_LIST ? a[0]->n : (slong)strlen(a[0]->str));
 }
 
+/* ---------------- lists of numbers: order and statistics ---------------- */
+
+/* the items: one list argument, or the arguments themselves */
+static Value **items_of(Value **a, int n, int *m, const char *fname) {
+    if (n == 1 && a[0]->kind == V_LIST) { *m = a[0]->n; return a[0]->items; }
+    if (n == 1) am_fail("%s needs a list of numbers or several numbers", fname);
+    *m = n; return a;
+}
+static int real_cmp(Value *x, Value *y, const char *fname) {   /* -1, 0, 1 exactly, or a failure */
+    x = am_reevaluate(x); y = am_reevaluate(y);
+    if (x->kind != V_NUM || y->kind != V_NUM) am_fail("%s compares real numbers, not expressions with variables", fname);
+    if (ca_check_is_real(x->num, am_ca) != T_TRUE || ca_check_is_real(y->num, am_ca) != T_TRUE) am_fail("%s compares real numbers", fname);
+    if (ca_check_lt(x->num, y->num, am_ca) == T_TRUE) return -1;
+    if (ca_check_gt(x->num, y->num, am_ca) == T_TRUE) return 1;
+    if (ca_check_equal(x->num, y->num, am_ca) == T_TRUE) return 0;
+    am_fail("%s: could not decide the order of two numbers", fname);
+}
+static Value *b_min(Value **a, int n) {
+    int m; Value **it = items_of(a, n, &m, "min");
+    if (!m) am_fail("min of an empty list");
+    Value *r = it[0];
+    for (int i = 1; i < m; i++) if (real_cmp(it[i], r, "min") < 0) r = it[i];
+    return r;
+}
+static Value *b_max(Value **a, int n) {
+    int m; Value **it = items_of(a, n, &m, "max");
+    if (!m) am_fail("max of an empty list");
+    Value *r = it[0];
+    for (int i = 1; i < m; i++) if (real_cmp(it[i], r, "max") > 0) r = it[i];
+    return r;
+}
+static Value **sorted_copy(Value **it, int m, const char *fname) {
+    Value **c = malloc((size_t)(m ? m : 1) * sizeof *c);
+    memcpy(c, it, (size_t)m * sizeof *c);
+    for (int i = 1; i < m; i++) for (int j = i; j > 0 && real_cmp(c[j], c[j - 1], fname) < 0; j--) { Value *t = c[j]; c[j] = c[j - 1]; c[j - 1] = t; }
+    return c;
+}
+static Value *b_sort(Value **a, int n) {
+    int m; Value **it = items_of(a, n, &m, "sort");
+    Value **c = sorted_copy(it, m, "sort");
+    Value *r = v_list(m);
+    for (int i = 0; i < m; i++) r->items[i] = c[i];
+    free(c);
+    return r;
+}
+static Value *b_mean(Value **a, int n) {
+    int m; Value **it = items_of(a, n, &m, "mean");
+    if (!m) am_fail("mean of an empty list");
+    Value *s = num_si(0);
+    for (int i = 0; i < m; i++) s = v_add(s, it[i]);
+    return v_div(s, num_si(m));
+}
+static Value *b_median(Value **a, int n) {
+    int m; Value **it = items_of(a, n, &m, "median");
+    if (!m) am_fail("median of an empty list");
+    Value **c = sorted_copy(it, m, "median");
+    Value *r = (m & 1) ? c[m / 2] : v_div(v_add(c[m / 2 - 1], c[m / 2]), num_si(2));
+    free(c);
+    return r;
+}
+static Value *var_impl(Value **a, int n, int sample, const char *fname) {
+    int m; Value **it = items_of(a, n, &m, fname);
+    if (m < (sample ? 2 : 1)) am_fail("%s needs at least %d values", fname, sample ? 2 : 1);
+    Value *s = num_si(0);
+    for (int i = 0; i < m; i++) s = v_add(s, it[i]);
+    Value *mu = v_div(s, num_si(m)), *q = num_si(0);
+    for (int i = 0; i < m; i++) { Value *d = v_sub(it[i], mu); q = v_add(q, v_mul(d, d)); }
+    return v_div(q, num_si(sample ? m - 1 : m));
+}
+static Value *b_variance(Value **a, int n) { return var_impl(a, n, 1, "variance"); }
+static Value *b_pvariance(Value **a, int n) { return var_impl(a, n, 0, "pvariance"); }
+static Value *b_stdev(Value **a, int n) { Value *v = var_impl(a, n, 1, "stdev"); return am_call("sqrt", &v, 1); }
+static Value *b_pstdev(Value **a, int n) { Value *v = var_impl(a, n, 0, "pstdev"); return am_call("sqrt", &v, 1); }
+static Value *b_norm(Value **a, int n) {
+    if (n != 1 || a[0]->kind != V_LIST) am_fail("norm(v): the Euclidean length of a vector");
+    Value *s = num_si(0);
+    for (int i = 0; i < a[0]->n; i++) {
+        Value *x = a[0]->items[i];
+        if (x->kind == V_NUM) { Value *ab = v_num(); ca_abs(ab->num, x->num, am_ca); x = ab; }
+        s = v_add(s, v_mul(x, x));
+    }
+    return am_call("sqrt", &s, 1);
+}
+static Value *b_round(Value **a, int n) {
+    if (n != 1) am_fail("round(x): the nearest whole number (halves to the even neighbour)");
+    Value *x = am_reevaluate(a[0]);
+    if (x->kind != V_NUM || ca_check_is_real(x->num, am_ca) != T_TRUE) am_fail("round needs a real number");
+    Value *h = v_add(x, v_div(num_si(1), num_si(2)));
+    Value *fl = v_num(); ca_floor(fl->num, h->num, am_ca);
+    if (ca_check_equal(fl->num, h->num, am_ca) == T_TRUE) {   /* exactly halfway: the even one */
+        fmpz_t z; fmpz_init(z);
+        if (whole(fl, z) && fmpz_is_odd(z)) fl = v_sub(fl, num_si(1));
+        fmpz_clear(z);
+    }
+    return fl;
+}
+static Value *b_arg(Value **a, int n) {
+    if (n != 1) am_fail("arg(z): the argument of a complex number, in (-pi, pi]");
+    Value *x = am_reevaluate(a[0]);
+    if (x->kind != V_NUM) return am_kernel_value("arg", a, 1);
+    Value *r = v_num(); ca_arg(r->num, x->num, am_ca);
+    if (ca_is_special(r->num, am_ca)) am_fail("arg(0) is undefined");
+    Value *mpi = v_num(); ca_pi(mpi->num, am_ca); ca_neg(mpi->num, mpi->num, am_ca);
+    if (ca_check_equal(r->num, mpi->num, am_ca) == T_TRUE) ca_neg(r->num, r->num, am_ca);   /* the principal value: pi, not -pi */
+    return r;
+}
+
 static Value *subs1(Value *f, int k, Value *val);
 static Value *b_product(Value **a, int n) {
     if (n == 1 && a[0]->kind == V_LIST) {
@@ -774,6 +881,18 @@ static const struct { const char *name; Builtin f; const char *sig, *doc; } DTAB
     {"divisors", b_divisors, "divisors(n)", "all positive divisors, in order"},
     {"nextprime", b_nextprime, "nextprime(n)", "the smallest prime greater than n (proved prime)"},
     {"totient", b_totient, "totient(n)", "Euler's totient"},
+    {"min", b_min, "min(list) | min(a, b, ...)", "the least of real numbers (decided exactly)"},
+    {"max", b_max, "max(list) | max(a, b, ...)", "the greatest of real numbers (decided exactly)"},
+    {"sort", b_sort, "sort(list)", "real numbers in increasing order"},
+    {"mean", b_mean, "mean(list)", "the arithmetic mean"},
+    {"median", b_median, "median(list)", "the middle value (the mean of the two middle values for an even count)"},
+    {"variance", b_variance, "variance(list)", "the sample variance (divided by n - 1)"},
+    {"pvariance", b_pvariance, "pvariance(list)", "the population variance (divided by n)"},
+    {"stdev", b_stdev, "stdev(list)", "the sample standard deviation"},
+    {"pstdev", b_pstdev, "pstdev(list)", "the population standard deviation"},
+    {"norm", b_norm, "norm(v)", "the Euclidean length of a vector"},
+    {"round", b_round, "round(x)", "the nearest whole number; halves go to the even neighbour (round(5/2) = 2)"},
+    {"arg", b_arg, "arg(z)", "the argument of a complex number, in (-pi, pi]"},
     {"fibonacci", b_fibonacci, "fibonacci(n)", "the Fibonacci number F(n) (F(0) = 0, F(1) = 1; negative n too)"},
     {"lucas", b_lucas, "lucas(n)", "the Lucas number L(n) (L(0) = 2, L(1) = 1)"},
     {"bernoulli", b_bernoulli, "bernoulli(n)", "the Bernoulli number B(n) (B(1) = -1/2)"},
